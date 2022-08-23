@@ -1,0 +1,323 @@
+---
+title: "Parks Data Initial Preparation"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Initial cleaning and combining of the '20 and '21 parks data into a consistent format.
+
++ Any observation with an abundance greater than 0, but which is missing the species, is removed
+
+<!-- Guaranteed to: -->
+
+<!-- + A site x date combination which was visited but no ticks were found will appear as zero counts TODO: for each tick combination? depends on whether end up using a long format....(and zero counts will have NA's for tick species/lifestage) -->
+
+## Load required packages
+
+```{r}
+library(tidyverse)
+library(sf)
+```
+
+## 2020 USC Data Cleaning
+
+First, we define column names that will be consistent between the data sets. This is easier to do before reading the `.xlsx` file since the existing column 
+names do not very friendly for programming. The tick collection columns are left as is since these will be dealt with separately.
+
+```{r}
+d20_cols <- c(
+    "date", "epi_week", "collector", "site", "county", "data_entry", "confirmed", "temp_min",
+    "temp_max", "rh_pct", "precipitation", "elevation"
+)
+
+d20_tick_cols <- readxl::read_xlsx("data-raw/SC Ticks 2020.xlsx", sheet="TOTAL Tick Collections") |> 
+    select(Drag_Genus:Bite_Number) |> 
+    colnames()
+
+(d20_cols <- c(d20_cols, d20_tick_cols, "comments"))
+```
+
+Now read in the data. This will be our starting point for the 2020 processing.
+
+```{r}
+d20 <- readxl::read_xlsx("data-raw/SC Ticks 2020.xlsx", sheet="TOTAL Tick Collections", col_names=d20_cols, skip=1) |> 
+    drop_na(date) |>  # drop the empty rows at the bottom
+    mutate(
+        date=as.Date(date), # convert to better date fmt
+        temp_min=as.character(temp_min),
+        rh_pct=as.character(rh_pct), precipitation=as.character(precipitation)
+    )
+```
+
+### Combine counts from the different techniques
+
+To do this, extract each subset of columns as its own data, then bind them. We also know at this stage in the study that several of these columns will definitely not be used,
+so they can be dropped now.
+
+```{r}
+drag <- d20 |> 
+    select(date, site, county, contains("Drag"), comments) |> 
+    drop_na(Drag_Genus) |> # this assumes all >0 counts have been identified
+    rename(genus=Drag_Genus, species=Drag_Species, sex=Drag_Sex, life_stage=Drag_LifeStage, count=Drag_Number) |> 
+    mutate(sampling_method="drag")
+
+co2 <- d20 |> 
+    select(date, site, county, contains("CO2"), comments) |> 
+    drop_na(CO2_Genus) |>
+    rename(genus=CO2_Genus, species=CO2_Species, sex=CO2_Sex, life_stage=CO2_LifeStage, count=CO2_Number) |> 
+    mutate(sampling_method="CO2")
+
+body <- d20 |> 
+    select(date, site, county, contains("Body"), comments) |> 
+    drop_na(Body_Genus) |> 
+    rename(genus=Body_Genus, species=Body_Species, sex=Body_Sex, life_stage=Body_LifeStage, count=Body_Number) |> 
+    mutate(sampling_method="body")
+
+bite <- d20 |> 
+    select(date, site, county, contains("Bite"), comments) |> 
+    drop_na(Bite_Genus) |> 
+    rename(genus=Bite_Genus, species=Bite_Species, sex=Bite_Sex, life_stage=Bite_LifeStage, count=Bite_Number) |> 
+    mutate(sampling_method="bite")
+```
+
+### Recover "no-ticks" observations
+
+An issue is that these new dataframes are missing the sites where no ticks of any kind were found. These observations were entered as their own row,
+but will not have a genus associated with any sampling method. This can be obtained easily though, since by inspection there are not any observations with a missing genus but positive count.
+
+```{r}
+none <- filter(d20, if_all(c(Drag_Genus, CO2_Genus, Body_Genus, Bite_Genus), is.na)) |> 
+    select(date, site, county, comments) |> 
+    mutate(genus="Ixodes", species="scapularis", life_stage="adult", count=0)
+```
+
+We see there were 27 visits where no ticks were found.
+
+Now these dataframes can all be bound together.
+
+```{r}
+d20_tidy <- bind_rows(drag, co2, body, bite, none) |> 
+    filter(!(is.na(species) & count > 0)) |> 
+    arrange(date)
+```
+
+## 2021 USC Data Cleaning
+
+Manually assign friendly column names:
+
+```{r}
+d21_cols <- c(
+    "site", "street", "city", "state", "county", "epi_week",
+    "collector", "time_of_day", "temp_min", "temp_max", "rh_pct",
+    "precipitation", "data_entry", "confirmed", "long", "lat", "habitat",
+    "ownership", "method", "method_extra", "date", "genus", "species", "adult_female",
+    "adult_male", "adult_unknown", "nymph", "larvae_collected", "larvae_counted", "larvae",
+    "sampling_notes", "dist_covered", "cdc_id", "comments"
+)
+```
+
+```{r}
+d21 <- readxl::read_xlsx("data-raw/2021 SC Ticks Parks CDC Format.xlsx", col_names=d21_cols, skip=2) |> 
+    drop_na(site) |>
+    mutate(date=as.Date(date))
+```
+
+Now we write some helper functions to make some columns consistent with the 2020 data.
+
+```{r}
+extract_sex <- function(x) {
+    ifelse(
+        str_detect(x, "[Ff]emale"), "F",
+        ifelse(str_detect(x, "[Mm]ale"), "M", "I")
+    )
+}
+
+extract_lifestage <- function(x) {
+    ifelse(
+        str_detect(x, "[Aa]dult"), "adult", 
+        ifelse(str_detect(x, "[Nn]ymph"), "nymph", "larva")
+    )
+}
+
+extract_samp_method <- function(x, y) {
+    map2_chr(x, y, ~{
+        if (!is.na(.y))
+            if (str_detect(.y, "[bB]ody")) "body" else "bite"
+        else
+            if (str_detect(.x, "[dD]rag")) "drag" else "CO2"
+    })
+}
+```
+
+```{r}
+d21_tidy <- d21  |> 
+    select(-c(street:state, epi_week:confirmed, sampling_notes, cdc_id)) |> 
+    pivot_longer(c(adult_female:nymph, larvae), values_to="count") |> 
+    filter(!(is.na(species) & count > 0)) |> 
+    mutate(
+        genus=ifelse(is.na(genus), "Ixodes", genus),
+        species=ifelse(is.na(species), "scapularis", species),
+        sex=extract_sex(name), 
+        life_stage=extract_lifestage(name), 
+        sampling_method=extract_samp_method(method, method_extra),
+        .keep="unused"
+    )
+```
+
+## Combine years and aggregate over sex
+
+These can now be combined. 
+
+<!-- Need to aggregate over sex now rather than later, because we need to compare these entries to the duplicate entires from DHEC.  -->
+
+```{r}
+usc <- bind_rows(d20_tidy, d21_tidy) |> 
+    select(date, site, intersect(colnames(d20_tidy), colnames(d21_tidy)), everything())
+```
+
+## Read in DHEC Data
+
+All the animal shelter data is removed, I'm assuming all the shelter data will be present in the SC Ticks folder, but may have to revisit to make sure these entries are not unique shelter entries. Also, entries from 2022 are removed.
+
+```{r}
+dhec_cols <- c("year", "date", "county", "site", "address", "lat", "long", "genus_species", "life_stage", "count", "count_per_effort")
+
+dhec <- readxl::read_xlsx("data-raw/SpeciesByLocationLifeStageDate.xlsx", col_names=dhec_cols, skip=1) |> 
+    mutate(date=as.Date(date)) |> 
+    filter(!str_detect(site, "Humane|Animal|Shelter"), date < as.Date("2022-01-01")) |> 
+    select(-c(year, address, count_per_effort))
+```
+
+## Assign each park a consistent name
+
+Examining site names, there are naming discrepancies even after removing State/County Park:
+
+```{r}
+dhec |>
+    mutate(site=str_remove(site, "( Beach)( State Park)?| State Park| County Park")) |>
+    distinct(site) |> 
+    arrange(site) |> 
+    pull(site)
+
+usc |> 
+    distinct(site) |> 
+    arrange(site) |> 
+    pull(site)
+```
+
+First we should fix USC names themselves:
+
+```{r}
+usc <- mutate(usc, site=str_remove(site, " Beach"))
+```
+
+```{r}
+fix_dhec_sites <- function(x) {
+    x |> 
+        str_remove("( Beach)( State Park)?| State Park| County Park") |>
+        str_remove("(?<=Hickory Knob|Oconee).*|North Charleston ") |> 
+        str_replace("(Caesar|King)s", "\\1's")
+}
+
+dhec <- mutate(dhec, site=fix_dhec_sites(site))
+```
+
+### Check for duplicate entries
+
+I have noticed that there are a number of entries with the same date and site, which appear to be clear duplicates. However, **when I compare counts for matching date, site, life stage, and species, there frequently are different (appear much lower) counts for the DHEC entries. Therefore, entries are considered duplicates if they have the same date, site, life stage, and species!!** This should be discussed with Melissa and/or Chris.
+
+<!-- Another caveat is that **if a DHEC observation has a zero count for a date and site that matches a non-zero count in the parks -->
+
+```{r}
+usc_agg <- usc |> 
+    group_by(date, site, genus, species, life_stage) |> 
+    summarize(count=sum(count)) |> 
+    ungroup()
+
+dhec_new <- dhec |> 
+    # Arbitrarily call their zero-counts scapularis so there are no "NA species"
+    mutate(
+        genus=str_extract(genus_species, "[A-Z][a-z]+"),
+        species=str_replace(str_extract(genus_species, "(?<= ).*"), "sp.", NA_character_),
+        life_stage=str_to_lower(life_stage),
+        .keep="unused"
+    ) |> 
+    filter(!(is.na(species) & count > 0)) |> # remove unidentified counts: we can't do much with these
+    mutate(species=ifelse(count == 0 & genus == "Ixodes", "scapularis", species)) # still need to make up a species for the zero-counts though
+
+dhec_new <- bind_rows(
+    # Add unique, non-zero visits
+    filter(dhec_new, count > 0) |> anti_join(usc_agg, by=c("date", "site", "life_stage", "species")),
+    # Add zero visits, but only those not with a matching site/date
+    filter(dhec_new, count == 0) |> anti_join(usc_agg, by=c("date", "site"))
+)
+```
+
+### Merge with USC data and assign consisistent locations
+
+The DHEC data may now be merged. Missing DHEC information (namely, `sex` and `sampling_method`) will appear as `NA`s.
+
+```{r}
+parks_tidy <- bind_rows(usc, dhec_new) |>
+    arrange(date, site, genus, species)
+```
+
+```{r}
+park_locations <- parks_tidy |> 
+    drop_na(lat, long) |> 
+    distinct(site, lat, long) |> # to give each entry equal weight when calc. mean
+    group_by(site) |>
+    summarise(lat=mean(lat), long=mean(long))
+
+pl_dhec <- dhec |> 
+    drop_na(lat, long) |> 
+    distinct(site, lat, long) |>
+    group_by(site) |>
+    summarise(lat=mean(lat), long=mean(long))
+```
+
+
+```{r}
+parks_tidy <- parks_tidy |> 
+    rows_update(park_locations, by=c("site")) |> 
+    rows_patch(pl_dhec, by=c("site")) # don't match the 2022 dates (a few new sites were visited this year)
+```
+
+Let's make sure now site x date pairs were accidentally deleted during processes (each unique "visit" should have at least one row even if no ticks were found):
+
+```{r}
+vis1 <- parks_tidy |> 
+    distinct(date, site)
+
+vis2 <- bind_rows(select(usc, date, site), select(dhec, date, site)) |> 
+    distinct()
+
+anti_join(vis1, vis2) # this should have 0 rows
+```
+
+
+And check the assigned locations look right:
+
+```{r}
+sc_counties <- st_read("geo-files/south-carolina-county-boundaries.shp")
+
+parks_tidy |> 
+    distinct(site, lat, long) |> 
+    st_as_sf(crs="+proj=longlat +datum=WGS84", coords=c("long", "lat")) |>
+    st_transform(st_crs(sc_counties)) |> 
+    ggplot() +
+    geom_sf(data=sc_counties) +
+    geom_sf_text(aes(label=site), alpha=0.75)
+```
+
+## Save the final combined data
+
+```{r}
+write_csv(parks_tidy, "data-proc/parks-data-20-21.csv")
+```
+
+

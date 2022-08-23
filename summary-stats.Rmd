@@ -1,0 +1,281 @@
+---
+title: "Summary Statistics"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load required packages and data
+```{r}
+library(tidyverse)
+library(kableExtra)
+library(ggcorrplot)
+library(lubridate)
+library(sf)
+library(MetBrewer)
+
+parks <- st_read("geo-files/parks-with-covars.shp") |> 
+    rename(
+        life_stage=lif_stg, land_cover=lnd_cvr, tree_canopy=tr_cnpy, min_temp=min_tmp, max_tmp=max_tmp,
+        precipitation=prcpttn, jan_min_temp=jn_mn_t
+    ) 
+```
+
+### Table: number of visits in which each species X life_stage combination were found
+
+```{r}
+parks |>
+    st_drop_geometry() |> 
+    filter(count > 0) |> 
+    count(genus, species, life_stage, sort=TRUE)
+```
+
+### Figure: occupancy status of each species in surveyed parks
+
+```{r}
+occ_status_space <- function(date, life_stage, count) {
+    vis_found <- tibble(date, life_stage, count) |> 
+        filter(count > 0)
+    
+    encounters <- length(unique(vis_found$date))
+    stages <- length(unique(vis_found$life_stage))
+    totals <- sum(vis_found$count)
+    
+    if (encounters > 1 | stages > 1 | totals >= 6)
+        return("established")
+    if (totals > 0)
+        return("suspected")
+    return("absent/not detected")
+}
+
+pal <- met.brewer("Hokusai1", type="discrete")
+
+parks_occ <- parks |> 
+    st_drop_geometry() |> 
+    group_by(genus, species, month) |> 
+    # TODO: change to established=>=6 or >1 ls or >1 year (found in that month)
+    summarise(occ=ifelse(sum(count > 0), "present", "absent")) |> 
+    mutate(n=sum(occ == "present")) |> 
+    ungroup() |> 
+    unite("species", genus, species, sep=" ") |> 
+    arrange(n)
+
+p1 <- ggplot(parks_occ, aes(month(month, label=TRUE), fct_inorder(species), fill=occ)) +
+    geom_tile(col="white", size=1.5) +
+    scale_fill_manual(values=c(present=pal[2], absent=pal[7])) +
+    guides(x=guide_axis(angle=45)) +
+    theme_bw() +
+    labs(subtitle=expression(paste(italic("When"), " were ticks found?")), x="Month", y=NULL, fill=NULL)
+
+parks_occ <- parks |> 
+    group_by(site, genus, species) |> 
+    summarise(occ=occ_status_space(date, life_stage, count), .groups="drop") |> 
+    unite("species", genus, species, sep=" ")
+
+sc_counties <- st_read("geo-files/south-carolina-county-boundaries.shp") |> 
+    st_transform(st_crs(parks))
+
+p2 <- parks_occ |> 
+    group_by(species) |> 
+    mutate(n=sum(occ == "established"), species=paste0(species, " (", round(100 * n / 30, 1), "%)")) |> 
+    ungroup() |> 
+    arrange(desc(n)) |> 
+    ggplot() +
+    geom_sf(data=sc_counties, col="gray40") +
+    geom_sf(aes(col=fct_relevel(occ, "established", after=Inf)), size=1.7) +
+    facet_wrap(~fct_inorder(species)) +
+    scale_color_manual(values=c(pal[7], pal[5], pal[2])) +
+    guides(x=guide_axis(angle=45)) +
+    labs(subtitle=expression(paste(italic("Where"), " were ticks found?")), col="Occupancy status") +
+    theme_bw()
+
+plot_grid(p1, p2, align="v", axis="l", ncol=1, rel_heights=c(1, 2))
+
+ggsave("figs/figure1.pdf", width=9, height=6.5)
+```
+
+### Figure: county distribution of tick species, from shelter data
+
+```{r}
+shelters <- read_csv("data-proc/shelters-tidy-20-21.csv") |> 
+    left_join(rename(sc_counties, county=COUNTYNM), by="county") |> 
+    st_as_sf()
+```
+
+```{r}
+shelters_occ <- shelters |> 
+    filter(genus != "Unknown" & species != "unknown" & species != "unkown") |> 
+    group_by(county, genus, species) |> 
+    summarise(occ=occ_status_space(1, life_stage, count), .groups="drop") |> 
+    unite("species", genus, species, sep=" ")
+
+ggplot(shelters_occ) +
+    geom_sf(data=sc_counties, col="gray40", fill=pal[7]) +
+    geom_sf(aes(fill=fct_relevel(occ, "established", after=Inf))) +
+    facet_wrap(~fct_inorder(species)) +
+    scale_fill_manual(values=c(pal[5], pal[2])) +
+    # guides(x=guide_axis(angle=45)) +
+    labs(subtitle="County status from shelter collections", fill="Occupancy status") +
+    theme_bw() +
+    theme(legend.position="bottom")
+```
+
+
+
+### Table: raw counts of species X year X life_stage
+
+```{r}
+t1_dat <- parks |> 
+    mutate(year=format(date, "%Y")) |> 
+    group_by(year, genus, life_stage) |> 
+    summarize(count=sum(count)) |>
+    ungroup() |> 
+    complete(year, genus, life_stage, fill=list(count=0)) |> 
+    pivot_wider(names_from=life_stage, values_from=count)
+
+colnames(t1_dat) <- c("", "", "Adult", "Larva", "Nymph")
+
+kbl(t1_dat, booktabs=TRUE) |> 
+    collapse_rows(1) |>
+    add_header_above(c("Year"=1, "Genus"=1, "Life Stage"=3)) |> 
+    kable_styling(latex_options="striped", stripe_color="blue") |> 
+    kable_paper()
+```
+
+### Examine evidence for a random intercept/slope model 
+
+### Relationship between monthly tick counts for different genera and life stages
+
+Dermacentor has been removed from all of these plots since very few were collected.
+
+#### Correlation of monthly counts between genus only
+
+```{r, out.width="75%"}
+parks |> 
+    group_by(site, month, genus) |> 
+    summarise(count=sum(count)) |> 
+    ungroup() |> 
+    filter(genus != "Dermacentor") |> 
+    pivot_wider(names_from=genus, values_from=count, values_fill=0) |> 
+    filter(Amblyomma < 500) |> 
+    ggplot(aes(Amblyomma, Ixodes)) +
+    geom_point(alpha=0.5) +
+    geom_line(stat="smooth", method="lm", se=FALSE, col="forestgreen", alpha=0.5)
+```
+
+#### Lagged correlation of monthly counts between genus only
+
+For each pair of genera $g$ and $h$, plot a regression of monthly counts $y_{gm}$ and $y_{hm-1}$.
+
+```{r}
+parks_mon <- parks |> 
+    group_by(month, genus) |> 
+    summarise(count=sum(count)) |> 
+    ungroup() |> 
+    filter(genus != "Dermacentor") |> 
+    complete(month, genus, fill=list(count=0))
+
+pmon_pairs <- full_join(parks_mon, parks_mon, by=character(), suffix=c("", "_prev")) |> 
+    filter(as.numeric(month_prev) == as.numeric(month) - 1) |> 
+    unite("label", genus_prev, genus, sep="_(t-1) x ") |> 
+    mutate(label=str_c(label, "_t"))
+
+ggplot(pmon_pairs, aes(count_prev, count)) +
+    geom_point(alpha=0.5) +
+    geom_line(stat="smooth", method="lm", se=FALSE, col="forestgreen", alpha=0.5) +
+    facet_wrap(~label, scales="free", ncol=2) +
+    labs(x="Count (previous month)", y="Count (current month)")
+```
+
+#### Now, separate by genus and life stage
+
+Additionally filter out the nymphs and larvae for Ixodes since only 0, 5 in total.
+
+```{r}
+parks_mon <- parks |> 
+    group_by(month, genus, life_stage) |> 
+    summarise(count=sum(count)) |> 
+    ungroup() |> 
+    filter(genus != "Dermacentor") |> 
+    complete(month, genus, fill=list(count=0)) |> 
+    filter(genus != "Ixodes" | life_stage == "adult")
+```
+
+Plot pairs within the current month. Note that facet plots on opposing sides of the diagonal are equivalent.
+
+```{r}
+pmon_pairs <- full_join(parks_mon, parks_mon, by=character(), suffix=c("", "_prev")) |> 
+    filter(
+        as.numeric(month_prev) == as.numeric(month),
+        (genus != genus_prev) | (life_stage != life_stage_prev) # don't compare to self since corr=1
+    ) |> 
+    unite("group", genus, life_stage, remove=TRUE) |> 
+    unite("group_prev", genus_prev, life_stage_prev, remove=TRUE)
+
+ggplot(pmon_pairs, aes(count_prev, count)) +
+    geom_point(alpha=0.5) +
+    geom_line(stat="smooth", method="lm", se=FALSE, col="forestgreen", alpha=0.5) +
+    # facet_wrap(group_prev ~ group, scales="free", ncol=3, labeller=label_both) +
+    facet_wrap(group_prev ~ group, scales="free", ncol=3) +
+    labs(x="Count (current month)", y="Count (current month)")
+```
+
+Plot pairs of a monthly lag, including with previous month's counts from the same `genus x life_stage` group:
+
+```{r, fig.width=7, fig.height=6}
+pmon_pairs <- full_join(parks_mon, parks_mon, by=character(), suffix=c("", "_prev")) |> 
+    filter(month_prev == month - months(1)) |> 
+    unite("group", genus, life_stage, remove=TRUE) |> 
+    unite("group_prev", genus_prev, life_stage_prev, remove=TRUE)
+
+ggplot(pmon_pairs, aes(count_prev, count)) +
+    geom_point(alpha=0.5) +
+    geom_line(stat="smooth", method="lm", se=FALSE, col="forestgreen", alpha=0.5) +
+    facet_wrap(group_prev ~ group, scales="free", ncol=4, labeller=label_both) +
+    labs(x="Count (previous month)", y="Count (current month)")
+```
+
+We can also view this as a correlation matrix
+
+```{r}
+pivot_wider(pmon_pairs, names_from=group, values_from=count, values_fill=0) |> 
+    pivot_wider(names_from=group_prev, values_from=count_prev, names_prefix="prev_", values_fill=0)
+```
+
+parks_mod |> 
+    pivot_wider(c(month, site), names_from=life_stage, values_from=count, values_fn=sum) |> # agg. sp. etc
+    replace_na(list(adult=0, nymph=0, larva=0)) |> 
+    filter(adult < 50, nymph < 75, larva < 75) |>
+    ggpairs(
+        mapping=ggplot2::aes(col=month), 
+        columns=c("adult", "nymph", "larva"), 
+        lower=list(continuous="points"), 
+        upper="blank"
+    )
+
+parks_mod |> 
+    # select(-sex) |> 
+    filter(life_stage == "adult", count < 100) |> 
+    pivot_wider(c(month, site), names_from=genus, values_from=count, values_fn=sum) |> # agg. sp. from same genus
+    select(-Dermacentor) |> 
+    replace_na(list(Ixodes=0, Amblyomma=0, Dermacentor=0)) |> 
+    ggpairs(
+        mapping=ggplot2::aes(col=month), 
+        columns=c("Ixodes", "Amblyomma"), 
+        lower=list(continuous="points"), 
+        upper="blank"
+    )
+
+ggplot(parks_mod, aes(mean_temp, log1p(count), col=genus)) +
+    geom_point(alpha=0.6) +
+    geom_smooth(method="lm", se=FALSE) +
+    facet_wrap(~life_stage)
+
+parks_mod |> 
+    group_by(date, site) |> 
+    summarize(num_ixodes=sum(count[genus=="Ixodes"]), num_amblyomma=sum(count[genus=="Amblyomma"])) |> 
+    ggplot(aes(num_amblyomma, num_ixodes, col=format(date, "%Y"))) +
+    geom_point()
