@@ -1,0 +1,11 @@
+*.bib
+*.docx
+*.html
+
+data-proc/
+data-raw/
+
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata

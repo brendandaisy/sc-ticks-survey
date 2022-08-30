@@ -45,7 +45,7 @@ fit_model <- function(formula, data, response="pres", sampling=FALSE, fx_prec=0.
     if (response == "pres") {
         ret <- inla(
             formula,
-            data=st_drop_geometry(data),
+            data=data,
             family="binomial",
             control.fixed = list(
                 expand.factor.strategy="inla",

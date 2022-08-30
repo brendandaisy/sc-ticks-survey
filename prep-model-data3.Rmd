@@ -84,47 +84,65 @@ These come as raster files with a 30m x 30m resolution. However, since PRISM onl
 The rasters are then converted to points form, creating a dataframe of points along a grid. The dataframe is then filtered to only contain points within the South Carolina border.
 
 ```{r}
-get_landcover_grid <- function(fname=NULL, bounds=NULL, mult=1) {
+get_landcover_grid <- function(fname=NULL, bounds=NULL, mult=1, poly=FALSE) {
     if (is.null(bounds))
         return(st_read(fname)) # then fname is a saved file so read it
     
     lcov <- raster("geo-files/land-cover/NLCD_2019_Land_Cover_L48_20210604_yDj0p7IM7PAX2WUUipna.tiff")
     lcov_agg <- aggregate(lcov, 133*mult, fun=modal)
 
-    lcov_sp <- rasterToPoints(lcov_agg, spatial=TRUE) |> 
+    if (poly) {
+        to_func <- rasterToPolygons
+        suffix <- paste0("poly-", mult*4, "km.shp")
+    }
+    else {
+        to_func <- function(x) rasterToPoints(x, spatial=TRUE)
+        suffix <- paste0("grid-", mult*4, "km.shp")
+    }
+    lcov_sp <- to_func(lcov_agg) |> 
         st_as_sf() |> 
         rename(land_cover=NLCD_2019_Land_Cover_L48_20210604_yDj0p7IM7PAX2WUUipna) |> 
         st_transform(crs(bounds))
 
     u <- st_within(lcov_sp, bounds)
     ret <- lcov_sp[map_lgl(u, ~length(.x) > 0),]
-    st_write(ret, paste0("geo-files/landcover-grid-", mult*4, "km.shp"), delete_dsn=TRUE)
+    st_write(ret, paste0("geo-files/landcover-", suffix), delete_dsn=TRUE)
     return(ret)
 }
 
-get_canopy_grid <- function(fname=NULL, bounds=NULL, mult=1) {
+get_canopy_grid <- function(fname=NULL, bounds=NULL, mult=1, poly=FALSE) {
     if (is.null(bounds))
         return(st_read(fname))
     
     canopy <- raster("geo-files/land-cover/NLCD_2016_Tree_Canopy_L48_20190831_yDj0p7IM7PAX2WUUipna.tiff")
     canopy_agg <- aggregate(canopy, 133*mult, fun=mean)
 
-    canopy_sp <- rasterToPoints(canopy_agg, spatial=TRUE) |>
+    if (poly) {
+        to_func <- rasterToPolygons
+        suffix <- paste0("poly-", mult*4, "km.shp")
+    }
+    else {
+        to_func <- function(x) rasterToPoints(x, spatial=TRUE)
+        suffix <- paste0("grid-", mult*4, "km.shp")
+    }
+    canopy_sp <- to_func(canopy_agg) |> 
         st_as_sf() |>
         rename(tree_canopy=NLCD_2016_Tree_Canopy_L48_20190831_yDj0p7IM7PAX2WUUipna) |>
         st_transform(crs(bounds))
 
     u <- st_within(canopy_sp, bounds)
     ret <- canopy_sp[map_lgl(u, ~length(.x) > 0),]
-    st_write(ret, paste0("geo-files/canopy-grid-", mult*4, "km.shp"), delete_dsn=TRUE)
+    st_write(ret, paste0("geo-files/canopy-", suffix), delete_dsn=TRUE)
     return(ret)
 }
 
 add_elevation_grid <- function(nlcd_grid) {
     elevation <- raster("geo-files/elevation/PRISM_us_dem_4km_bil.bil")
     elevation <- projectRaster(elevation, crs=crs(nlcd_grid))
-    print(elevation)
-    rvals <- raster::extract(elevation, nlcd_grid)
+    if (any(st_is(nlcd_grid, "POLYGON")))
+        rvals <- raster::extract(elevation, nlcd_grid, fun=mean)
+    else
+        rvals <- raster::extract(elevation, nlcd_grid)
     mutate(nlcd_grid, elevation=rvals, .after=tree_canopy)
 }
 ```
@@ -147,10 +165,10 @@ However, the aggregation can take a minute or two, so instead we load the grids 
 For some reason, the CRS needs to be reprojected even if they are loaded though.
 
 ```{r}
-lcov_grid <- get_landcover_grid("geo-files/landcover-grid-4km.shp") |> st_transform(crs(sc_state))
-canopy_grid <- get_canopy_grid("geo-files/canopy-grid-4km.shp") |> rename(tree_canopy=tr_cnpy) |> st_transform(crs(sc_state))
-# lcov_grid <- get_landcover_grid(bounds=sc_state, mult=1)
-# canopy_grid <- get_canopy_grid(bounds=sc_state, mult=1)
+# lcov_grid <- get_landcover_grid("geo-files/landcover-grid-4km.shp") |> st_transform(crs(sc_state))
+# canopy_grid <- get_canopy_grid("geo-files/canopy-grid-4km.shp") |> rename(tree_canopy=tr_cnpy) |> st_transform(crs(sc_state))
+lcov_grid <- get_landcover_grid(bounds=sc_state, mult=1, poly=TRUE)
+canopy_grid <- get_canopy_grid(bounds=sc_state, mult=1, poly=TRUE)
 nlcd_grid <- st_join(lcov_grid, canopy_grid) |> add_elevation_grid()
 ```
 
