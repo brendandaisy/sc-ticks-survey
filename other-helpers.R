@@ -1,7 +1,8 @@
 library(tidyverse)
 
-# Model data preparation----------------------------------------------------------
-
+# Initial data preparation--------------------------------------------------------
+# in all analyses, A. maculatum, all larvae, and the min_temp---------------------
+# covariate are removed-----------------------------------------------------------
 read_parks_sf <- function(f="geo-files/parks-with-covars.shp", drop=NULL) {
     read_sf(f) |> 
         rename(
@@ -13,43 +14,58 @@ read_parks_sf <- function(f="geo-files/parks-with-covars.shp", drop=NULL) {
         select(-{{drop}})
 }
 
-# Initial data preparation--------------------------------------------------------
-# in all analyses, A. maculatum, all larvae, and the min_temp---------------------
-# covariate are removed-----------------------------------------------------------
-prep_parks_model_data <- function(parks_sf) {
+prep_parks_model_data <- function(parks_sf, rescale=TRUE, joint_compat=TRUE) {
     # rescale covariates and format a few things
     parks_rescale <- parks_sf |> 
         mutate(
-            across(tree_canopy:mean_rh, ~(.x - mean(.x)) / sd(.x)), # center and scale
-            land_cover=land_cover_labels(land_cover) |> fct_drop(),
+            across(tree_canopy:mean_rh, ~if (rescale) (.x - mean(.x)) / sd(.x) else .x), # center and scale
+            land_cover=land_cover_labels(land_cover),
             tick_class=ifelse(genus == "Ixodes", str_c(genus, " spp."), str_c(genus, " ", species))
         )
     
-    parks_rescale |> 
+    ret <- parks_rescale |> 
         group_by(across(c(date, month, site, tick_class, land_cover:mean_rh))) |>
-        summarize(pres=ifelse(sum(count) > 0, 1L, 0L), abun=sum(count), .groups="drop") |> 
-        mutate(
-            id=1:n(), 
-            tcnum=case_when(
-                tick_class == "Amblyomma americanum" ~ 1L, 
-                tick_class == "Dermacentor variabilis" ~ 2L, 
-                TRUE ~ 3L
-            )
-        ) |> 
-        arrange(tcnum)
+        summarize(pres=ifelse(sum(count) > 0, 1L, 0L), abun=sum(count), .groups="drop")
+    
+    if (joint_compat) {
+        ret <- mutate(ret, tcnum=case_when(
+            tick_class == "Amblyomma americanum" ~ 1L, 
+            tick_class == "Dermacentor variabilis" ~ 2L, 
+            TRUE ~ 3L
+        )) |> 
+            arrange(tcnum) |> 
+            mutate(id=1:n())
+    }
+    return(ret)
+}
+
+# This should be a function, since 1) the covariate scaling is very much dependent on the chosen locations now, and 
+# 2) the joint residuals require the data to be arranged each time
+prep_new_data <- function(known_df, new_df=NULL, scale=FALSE) {
+    ret <- known_df |>
+        bind_rows(new_df) |>
+        arrange(tcnum) |>
+        mutate(id=1:n())
+    if (scale)
+        ret <- mutate(ret, across(tree_canopy:mean_rh, ~(.x - mean(.x)) / sd(.x)))
+    return(ret)
 }
 
 # Helpers for working with INLA objects-------------------------------------------
 
-fit_model <- function(formula, data, response="pres", sampling=FALSE, fx_prec=0.3, ...) {
+fit_model <- function(formula, data, fx_prec, response="pres", sampling=FALSE, fx_corr=FALSE, ...) {
+    if (is(data, "sf"))
+        data <- st_drop_geometry(data)
     if (response == "pres") {
         ret <- inla(
             formula,
             data=data,
             family="binomial",
             control.fixed = list(
+                # TODO: why is this here??
                 expand.factor.strategy="inla",
-                prec=fx_prec
+                prec=fx_prec,
+                correlation.matrix=fx_corr
             ),
             control.compute=list(config=sampling),
             control.predictor=list(link=1, compute=TRUE), 
@@ -59,6 +75,13 @@ fit_model <- function(formula, data, response="pres", sampling=FALSE, fx_prec=0.
         ret <- "not implemented"
     }
     return(ret)
+}
+
+formula_jsdm <- function(df) {
+    pres ~ 0 + tick_class +  
+        tick_class:land_cover + tick_class:tree_canopy + tick_class:elevation +
+        tick_class:jan_min_temp + tick_class:max_temp + tick_class:precipitation + tick_class:mean_rh +
+        f(id, model="iid3d", n=nrow(df), hyper=list(prec1=list(param=c(4, rep(1, 3), rep(0, 3)))))
 }
 
 get_fixed_effects <- function(..., new_loc) {
@@ -108,7 +131,8 @@ fx_labels <- function(fx) {
     fx |> 
         str_remove("tick_class") |> 
         str_remove("(Amblyomma americanum|Dermacentor variabilis|Ixodes spp\\.):") |> 
-        str_replace("Amblyomma americanum|Dermacentor variabilis|Ixodes spp\\.", "intercept")
+        str_replace("Amblyomma americanum|Dermacentor variabilis|Ixodes spp\\.", "intercept") |> 
+        fct_relevel("intercept", after=Inf)
 }
 
 land_cover_labels <- function(lc) {
@@ -135,7 +159,8 @@ land_cover_labels <- function(lc) {
         "Woody Wetlands",
         "Emergent Herbaceous Wetlands"
     )
-    factor(as.character(lc), levels=lv, labels=lab)
+    ret <- factor(as.character(lc), levels=lv, labels=lab)
+    return(fct_drop(ret))
 }
 
 land_cover_palette <- function() {

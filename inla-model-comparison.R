@@ -30,45 +30,12 @@ get_formula <- function(terms, response="pres") {
         as.formula()
 }
 
-# Initial data preparation--------------------------------------------------------
-# in all analyses, A. maculatum, all larvae, and the min_temp---------------------
-# covariate are removed-----------------------------------------------------------
-
 #TODO: with the new covariates, remove jan_min_temp as well!!!
 #TODO: or not? Now seems like not nec. with the == larva bug removed (8/16)
 
-parks <- st_read("geo-files/parks-with-covars.shp") |> 
-    rename(
-        life_stage=lif_stg, land_cover=lnd_cvr, tree_canopy=tr_cnpy, elevation=elevatn, 
-        min_temp=min_tmp, max_temp=max_tmp, precipitation=prcpttn, jan_min_temp=jn_mn_t
-    ) |> 
-    # Larvae must absolute be filtered since they were always assigned A. americanum!!!
-    filter(species != "maculatum", life_stage != "larva") |> 
-    select(-min_temp)
-
-#TODO: rerun this to double check and make some changes: 1. give land_cover proper labels
-
-# rescale covariates and format a few things
-parks_rescale <- parks |> 
-    mutate(
-        across(tree_canopy:mean_rh, ~(.x - mean(.x)) / sd(.x)), # center and scale
-        land_cover=land_cover_labels(land_cover) |> fct_drop(),
-        tick_class=ifelse(genus == "Ixodes", str_c(genus, " spp."), str_c(genus, " ", species))
-    )
-
 # data to be used in all following analyses:
-parks_model_data <- parks_rescale |> 
-    group_by(across(c(date, month, site, tick_class, land_cover:mean_rh))) |>
-    summarize(pres=ifelse(sum(count) > 0, 1L, 0L), abun=sum(count), .groups="drop") |> 
-    mutate(
-        id=1:n(), 
-        tcnum=case_when(
-            tick_class == "Amblyomma americanum" ~ 1L, 
-            tick_class == "Dermacentor variabilis" ~ 2L, 
-            TRUE ~ 3L
-        )
-    ) |> 
-    arrange(tcnum)
+parks_model_data <- read_parks_sf(drop=min_temp) |> 
+    prep_parks_model_data()
 
 # Model performance for binary response-------------------------------------------
 
