@@ -30,9 +30,6 @@ get_formula <- function(terms, response="pres") {
         as.formula()
 }
 
-#TODO: with the new covariates, remove jan_min_temp as well!!!
-#TODO: or not? Now seems like not nec. with the == larva bug removed (8/16)
-
 # data to be used in all following analyses:
 parks_model_data <- read_parks_sf(drop=min_temp) |> 
     prep_parks_model_data()

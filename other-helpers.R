@@ -39,6 +39,33 @@ prep_parks_model_data <- function(parks_sf, rescale=TRUE, joint_compat=TRUE) {
     return(ret)
 }
 
+append_pred_grid <- function(parks_df, f="geo-files/covar-grid.shp") {
+    covar_grid <- st_read(f) |> 
+        rename(
+            land_cover=lnd_cvr, tree_canopy=tr_cnpy, elevation=elevatn, min_temp=min_tmp, max_temp=max_tmp,
+            precipitation=prcpttn, jan_min_temp=jn_mn_t
+        ) |> 
+        mutate(land_cover=land_cover_labels(land_cover)) |> 
+        select(-min_temp)
+    
+    # Add a unique site label to each grid location (i.e. const. over time)
+    covar_grid <- covar_grid |> 
+        group_by(geo=as.character(geometry)) |> 
+        mutate(site=str_c("g", cur_group_id())) |> 
+        ungroup() |> 
+        select(-geo) |> 
+        mutate(data=list(tibble(tick_class=unique(parks_df$tick_class), pres=NA, tcnum=1:3))) |> 
+        unnest(c(data))
+    
+    # Add levels missing from parks data but present in SC
+    levels(parks_df$land_cover) <- levels(covar_grid$land_cover)
+    
+    # Predict expected risk across grid, for sampling---------------------------------
+    
+    # WARNING: all_data has now been scaled, and is the reference covar values for all subdesigns
+    return(prep_new_data(parks_df, covar_grid, scale=TRUE))
+}
+
 # This should be a function, since 1) the covariate scaling is very much dependent on the chosen locations now, and 
 # 2) the joint residuals require the data to be arranged each time
 prep_new_data <- function(known_df, new_df=NULL, scale=FALSE) {
@@ -46,6 +73,7 @@ prep_new_data <- function(known_df, new_df=NULL, scale=FALSE) {
         bind_rows(new_df) |>
         arrange(tcnum) |>
         mutate(id=1:n())
+    
     if (scale)
         ret <- mutate(ret, across(tree_canopy:mean_rh, ~(.x - mean(.x)) / sd(.x)))
     return(ret)
@@ -62,8 +90,7 @@ fit_model <- function(formula, data, fx_prec, response="pres", sampling=FALSE, f
             data=data,
             family="binomial",
             control.fixed = list(
-                # TODO: why is this here??
-                expand.factor.strategy="inla",
+                expand.factor.strategy="inla", # nec. since alternative removes unused lvls
                 prec=fx_prec,
                 correlation.matrix=fx_corr
             ),
@@ -78,7 +105,7 @@ fit_model <- function(formula, data, fx_prec, response="pres", sampling=FALSE, f
 }
 
 formula_jsdm <- function(df) {
-    pres ~ 0 + tick_class +  
+    pres ~ -1 + tick_class +  
         tick_class:land_cover + tick_class:tree_canopy + tick_class:elevation +
         tick_class:jan_min_temp + tick_class:max_temp + tick_class:precipitation + tick_class:mean_rh +
         f(id, model="iid3d", n=nrow(df), hyper=list(prec1=list(param=c(4, rep(1, 3), rep(0, 3)))))
