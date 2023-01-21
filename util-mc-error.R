@@ -1,6 +1,12 @@
 library(INLA)
+library(purrr)
 library(tidyverse)
 library(sf)
+
+install.packages("furrr")
+library(furrr)
+
+inla.setOption(inla.mode="classic", num.threads="16:1")
 
 source("other-helpers.R")
 source("utility-helpers.R")
@@ -9,39 +15,73 @@ parks_data <- read_parks_sf("geo-files/parks-with-covars.shp", drop=min_temp) |>
     prep_parks_model_data(rescale=FALSE) # don't rescale, since scaled wrt. grid data below
 
 all_data <- append_pred_grid(parks_data) |> st_drop_geometry()
-fit_all <- readRDS("inla-fit-all-data.rds")
 
-post_pred_all <- all_data |>
-    mutate(
-        mean_pres=fit_all$summary.fitted.values$mean,
-        sd_pres=fit_all$summary.fitted.values$sd,
-        var_eta=fit_all$summary.linear.predictor$sd^2
-    ) |> 
-    st_drop_geometry() # drop here, since need to at some point and don't need to project to R^3
-
-# pp_grid <- filter(post_pred_all, is.na(pres))
-# pp_parks <- filter(post_pred_all, !is.na(pres))
 grid_mod <- filter(all_data, is.na(pres)) # final not yet observed data for fitting models
 parks_mod <- filter(all_data, !is.na(pres)) # final observed data for fitting models
 
+num_d_rep <- 3 # number of designs, for each design size
+num_loc <- c(1, 10, 20)
+ns <- c(10, 20, 40)
+set.seed(155)
+plan(future::multicore(workers=8))
+
 # a random, first design of 3 points to test with
-set.seed(125)
 
-d3 <- grid_mod |> 
-    select(date, site) |> 
-    slice_sample(n=3)
+design_err <- function(num_loc, ns, n_reps=1, sel=sel_list_inla(parks_mod)) {
+    d <- grid_mod |> 
+        select(date, site) |> 
+        slice_sample(n=num_loc)
+    
+    d_df <- semi_join(grid_mod, d, by=c("date", "site"))
+    new_df <- prep_new_data(parks_mod, d_df, scale=FALSE)
+    
+    # get one sample of [ynew | y, d]
+    pred_idxs <- which(is.na(new_df$pres))
+    pred_mat <- rpost_predict(new_df, pred_idxs, n=1)
+    new_df$pres[pred_idxs] <- rbinom(nrow(d_df), rep(1, nrow(d_df)), pred_mat[,1])
+    # error for a particular ynew
+    urep_yfix <- map_dfr(1:n_reps, ~tibble_row(!!!util_rep(new_df, sel)))
+    
+    # error for proper utility (many samples of ynew)
+    ns <- rep(ns, each=n_reps) # for each n, do n_reps
+    urep_yrep <- map_dfr(ns, ~mutate(tibble_row(!!!utility(d, parks_mod, .x, grid_mod, u_only=TRUE)), n=.x))
+    
+    tibble_row(
+        design=list(d),
+        urep_yfix=list(urep_yfix), 
+        urep_yrep=list(urep_yrep)
+    )
+}
 
-d3_df <- semi_join(grid_mod, d3)
-new_df <- prep_new_data(parks_mod, d3_df, scale=FALSE)
-pred_idxs <- which(is.na(new_df$pres))
+d_sizes <- rep(num_loc, each=num_d_rep)
+future_iwalk(
+    d_sizes, 
+    ~saveRDS(design_err(.x, ns=ns, n_reps=10), paste0("mcmc-err", .y, ".rds")),
+    .options=furrr_options(seed=TRUE),
+    .progress=TRUE
+)
 
-pred_mat <- rpost_predict(new_df, pred_idxs, n=1)
-new_df$pres[pred_idxs] <- rbinom(nrow(d3_df), rep(1, nrow(d3_df)), pred_mat[,1])
+res <- map_dfr(seq_along(d_sizes), ~{
+    res_d <- readRDS(paste0("mcmc-err", .x, ".rds"))
+    # file.remove(paste0("mcmc-err", .x, ".rds"))
+    res_d
+})
 
-urep_yfix <- map_dbl(1:100, ~util_bd_rep(new_df, sel_list_inla(parks_mod)))
+res$urep_yfix
 
-mean(urep_yfix)
+saveRDS(res, "mcmc-err-results.rds")
 
-new_df <- prep_new_data(parks_mod, d3_df, scale=FALSE)
+res$urep_yrep
 
-urep_n10 <- map_dbl(1:20, ~utility(d3, parks_mod, 10, grid_mod, u_only=TRUE))
+err_results <- res |> 
+    mutate(d_id=1:n()) |> 
+    unnest(urep_yrep) |> 
+    pivot_longer(Dfixed:Eres, "criteria", values_to="utility") |> 
+    group_by(n, d_id, criteria) |> 
+    summarise(sd=sd(utility), snr=abs(mean(utility) / sd))
+
+ggplot(err_results, aes(as.character(n), sd)) +
+    geom_point() +
+    geom_boxplot() +
+    facet_wrap(~criteria, scales="free") +
+    labs(x="N", y="Signal to Noise")
