@@ -108,13 +108,13 @@ get_eta <- function(x) {
 
 tmp2 <- map(1:nrow(X), ~X[.x,] %*% get_eta(Xfull[.x,]) %*% t(X[.x,]))
 
-I <- t(X) %*% diag(tmp$sd_pres^2) %*% X
+I <- t(X) %*% diag(tmp$mean_pres * (1 - tmp$mean_pres)) %*% X
 I <- reduce(tmp2, ~.x + .y)
 
 eigen(I)$values < -1e8
 cov_mat <- solve(I)
 
-image(I)
+image(as(cov_mat, "sparseMatrix"))
 
 I %*% cov_mat
 det(cov_mat)

@@ -21,7 +21,7 @@ sel_list_inla <- function(df) {
 
 # returns a matrix of risk probabilities with locations as rows and `n` cols
 rpost_predict <- function(obs_df, pred_idxs, n=1) {
-    f <- formula_jsdm(obs_df)
+    f <- formula_bed()
     ft <- fit_model(f, obs_df, fx_prec=0.2, selection=list(Predictor=pred_idxs))
     jsamp <- inla.rjmarginal(n, ft$selection)
     return(inla.link.invlogit(jsamp$samples))
@@ -30,7 +30,7 @@ rpost_predict <- function(obs_df, pred_idxs, n=1) {
 # Bayesian D-optimality criteria
 # assumes new_df has sampled pres, with parks data added
 util_rep <- function(new_df, sel, criteria=c("Dfixed", "Dres", "Eres"), stable=TRUE) {
-    f <- formula_jsdm(new_df)
+    f <- formula_bed()
     ft <- fit_model(f, new_df, fx_prec=0.2, selection=sel)
     ret <- rep(0, length(criteria))
     if ("Dfixed" %in% criteria)
@@ -40,7 +40,7 @@ util_rep <- function(new_df, sel, criteria=c("Dfixed", "Dres", "Eres"), stable=T
         if ("Dres" %in% criteria)
             ret[2] <- -log(det(res_cov))
         if ("Eres" %in% criteria)
-            ret[3] <- -kappa(res_cov)
+            ret[3] <- -eigen(res_cov, only.values=TRUE)[1]
     }
     names(ret) <- criteria
     return(ret)

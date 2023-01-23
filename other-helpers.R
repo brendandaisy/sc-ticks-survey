@@ -81,7 +81,7 @@ prep_new_data <- function(known_df, new_df=NULL, scale=FALSE) {
 
 # Helpers for working with INLA objects-------------------------------------------
 
-fit_model <- function(formula, data, fx_prec, response="pres", sampling=FALSE, fx_corr=FALSE, ...) {
+fit_model <- function(formula, data, fx_prec, response="pres", control_compute=list(mlik=FALSE), ...) {
     if (is(data, "sf"))
         data <- st_drop_geometry(data)
     if (response == "pres") {
@@ -91,10 +91,9 @@ fit_model <- function(formula, data, fx_prec, response="pres", sampling=FALSE, f
             family="binomial",
             control.fixed = list(
                 expand.factor.strategy="inla", # nec. since alternative removes unused lvls
-                prec=fx_prec,
-                correlation.matrix=fx_corr
+                prec=fx_prec
             ),
-            control.compute=list(config=sampling),
+            control.compute=control_compute,
             control.predictor=list(link=1, compute=TRUE), 
             ...
         )
@@ -104,11 +103,21 @@ fit_model <- function(formula, data, fx_prec, response="pres", sampling=FALSE, f
     return(ret)
 }
 
-formula_jsdm <- function(df) {
-    pres ~ -1 + tick_class +  
+# optional update formula for random effects
+formula_jsdm <- function(df, rx=~.) {
+    ret <- pres ~ -1 + tick_class +  
         tick_class:land_cover + tick_class:tree_canopy + tick_class:elevation +
         tick_class:jan_min_temp + tick_class:max_temp + tick_class:precipitation + tick_class:mean_rh +
         f(id, model="iid3d", n=nrow(df), hyper=list(prec1=list(param=c(4, rep(1, 3), rep(0, 3)))))
+    
+    update(ret, rx)
+}
+
+# the (current...) preferred model for performing BED
+formula_bed <- function(...) {
+    pres ~ -1 + tick_class +  
+        tick_class:land_cover + tick_class:tree_canopy + tick_class:elevation +
+        tick_class:jan_min_temp + tick_class:max_temp + tick_class:precipitation + tick_class:mean_rh
 }
 
 get_fixed_effects <- function(..., new_loc) {
@@ -159,7 +168,9 @@ fx_labels <- function(fx) {
         str_remove("tick_class") |> 
         str_remove("(Amblyomma americanum|Dermacentor variabilis|Ixodes spp\\.):") |> 
         str_replace("Amblyomma americanum|Dermacentor variabilis|Ixodes spp\\.", "intercept") |> 
-        fct_relevel("intercept", after=Inf)
+        str_remove("land_cover") |> 
+        fct_relevel("intercept", after=Inf) |> 
+        fct_relevel("tree_canopy", "elevation", "jan_min_temp", "max_temp", "precipitation", "mean_rh", after=0)
 }
 
 land_cover_labels <- function(lc) {
