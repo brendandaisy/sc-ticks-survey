@@ -9,6 +9,8 @@ inla.setOption(inla.mode="classic", num.threads="16:1")
 source("other-helpers.R")
 source("utility-helpers.R")
 
+dir.create("util-results", showWarnings=FALSE)
+
 set.seed(202)
 plan(future::multicore(workers=8))
 
@@ -23,9 +25,9 @@ grid_mod <- filter(all_data, is.na(pres)) # final not yet observed data for fitt
 parks_mod <- filter(all_data, !is.na(pres)) # final observed data for fitting models
 
 num_loc <- c(1, seq(5, 20, 5))
-reps <- 10
+reps <- 15
 expg <- expand_grid(num_loc=num_loc, rep=1:reps)
-n <- 1
+n <- 50
 
 # Random selection, baseline design strategy--------------------------------------
 u_random <- function(num_loc, i) {
@@ -37,4 +39,12 @@ u_random <- function(num_loc, i) {
     saveRDS(res, paste0("util-results/util-random", i, ".rds"))
 }
 
-future_iwalk(expg$num_loc[1], u_random, .options=furrr_options(seed=TRUE), .progress=TRUE)
+future_iwalk(expg$num_loc, u_random, .options=furrr_options(seed=TRUE), .progress=TRUE)
+
+res <- map_dfr(1:nrow(expg), ~{
+    res_d <- readRDS(paste0("util-results/util-random", .x, ".rds"))
+    # file.remove(paste0("mcmc-err", .x, ".rds"))
+    res_d
+})
+
+saveRDS(res, "util-results/util-random.rds")

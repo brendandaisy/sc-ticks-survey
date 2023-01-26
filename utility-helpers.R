@@ -32,25 +32,26 @@ rpost_predict <- function(obs_df, pred_idxs, n=1) {
 util_rep <- function(new_df, sel, criteria=c("Dfixed", "Dres", "Eres"), stable=TRUE) {
     f <- formula_bed()
     ft <- fit_model(f, new_df, fx_prec=0.2, selection=sel)
-    ret <- rep(0, length(criteria))
-    if ("Dfixed" %in% criteria)
-        ret[1] <- -log(det(ft$selection$cov.matrix))
-    if ("Dres" %in% criteria | "Eres" %in% criteria) {
-        res_cov <- cov(inla.hyperpar.sample(30000, ft))
-        if ("Dres" %in% criteria)
-            ret[2] <- -log(det(res_cov))
-        if ("Eres" %in% criteria)
-            ret[3] <- -eigen(res_cov, only.values=TRUE)[1]
-    }
-    names(ret) <- criteria
-    return(ret)
+    # ret <- rep(0, length(criteria))
+    # if ("Dfixed" %in% criteria)
+    #     ret[1] <- -log(det(ft$selection$cov.matrix))
+    # if ("Dres" %in% criteria | "Eres" %in% criteria) {
+    #     res_cov <- cov(inla.hyperpar.sample(30000, ft))
+    #     if ("Dres" %in% criteria)
+    #         ret[2] <- -log(det(res_cov))
+    #     if ("Eres" %in% criteria)
+    #         ret[3] <- -eigen(res_cov, only.values=TRUE)[1]
+    # }
+    # names(ret) <- criteria
+    # return(ret)
+    -log(det(ft$selection$cov.matrix))
 }
 
 # optional full_df can be used to extract all info if d_df only has site and date
 # this can be useful since there are J rows per visit
 # `...` is passed to `util_rep`
-utility <- function(d, known_df, n=1, full_df=NULL, by=c("date", "site"), u_only=FALSE, criteria=c("Dfixed", "Dres", "Eres")) {
-    d_df <- if (!is.null(full_df)) semi_join(full_df, d, by=by) else d
+utility <- function(d, known_df, n=1, full_df=NULL, by=c("date", "site"), u_only=FALSE) {
+    d_df <- if (!is.null(full_df)) inner_join(full_df, d, by=by) else d
     # setup new data frame (parks + d_df) and get prediction matrix
     sel <- sel_list_inla(known_df)
     new_df <- prep_new_data(known_df, d_df, scale=FALSE)
@@ -58,11 +59,10 @@ utility <- function(d, known_df, n=1, full_df=NULL, by=c("date", "site"), u_only
     pred_risk_mat <- rpost_predict(new_df, pred_idxs, n=n)
     
     # for each row in pred mat, get a sample from p(y_pred|y) and calc utility
-    u_rep <- map(1:ncol(pred_risk_mat), ~{
+    u_rep <- map_dbl(1:ncol(pred_risk_mat), ~{
         new_df$pres[pred_idxs] <- rbinom(nrow(d_df), rep(1, nrow(d_df)), pred_risk_mat[,.x])
-        util_rep(new_df, sel)
         tryCatch(
-            util_rep(new_df, sel, criteria),
+            util_rep(new_df, sel),
             # if (.x == 1) util_rep(new_df, sel) else stop("Test"),
             error=function(e) {
                 print(e)
@@ -74,9 +74,12 @@ utility <- function(d, known_df, n=1, full_df=NULL, by=c("date", "site"), u_only
             }
         )
     })
+    # if (u_only)
+    #     return(map_dbl(list_transpose(u_rep), mean, na.rm=TRUE))
+    # return(tibble_row(!!!map_dbl(list_transpose(u_rep), mean, na.rm=TRUE), design=list(d)))
     if (u_only)
-        return(map_dbl(list_transpose(u_rep), mean, na.rm=TRUE))
-    return(tibble_row(!!!map_dbl(list_transpose(u_rep), mean, na.rm=TRUE), design=list(d)))
+        return(mean(u_rep, na.rm=TRUE))
+    return(tibble_row(dopt=mean(u_rep, na.rm=TRUE), design=list(d)))
 }
 
 # if file exists, it will be appended

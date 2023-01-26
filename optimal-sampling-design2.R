@@ -6,6 +6,7 @@ library(sf)
 # library(gridExtra)
 # library(DiceOptim)
 library(fields)
+library(caret)
 
 source("other-helpers.R")
 source("utility-helpers.R")
@@ -75,31 +76,144 @@ grid_mod_sort <- grid_mod |>
     filter(row_number() == 1) |> 
     ungroup()
 
-u_simple_var <- imap_dfr(num_loc, ~{ # only have to do each B once since deterministic
-    print(paste0("i=", .y))
+u_simple_var <- map_dfr(num_loc, ~{ # only have to do each B once since deterministic
+    print(paste0("num_loc=", .x))
     d <- head(grid_mod_sort, .x)
-    mutate(utility(d, parks_mod, n=n, full_df=grid_mod), num_loc=.x)
+    mutate(utility(d, parks_mod, n=50, full_df=grid_mod), num_loc=.x)
 })
+
+saveRDS(u_simple_var, "util-results/util-simple-var.rds")
 
 u_simple_var <- save_util_res(u_simple_var, "simple-var", n=n)
 u_simple_var <- load_util_res(u_simple_var, "simple-var", n=n)
 
 ###
 
-tmp <- grid_mod |> 
+local_utility <- function(d, known_df, pred_df=NULL, copy=FALSE) {
+# TODO: revisit at some point whether known_df can be removed, or can be used for only one tick species
+# probably can, but confusing especially with the dummy matrix
+    # d_df <- if (!is.null(pred_df)) inner_join(pred_df, d, by=c("date", "site")) else d
+    # d_df <- bind_rows(d_df, known_df)
+    # 
+    # X <- dummyVars(
+    #     formula_bed(), 
+    #     data=mutate(d_df, land_cover=fct_drop(land_cover)),
+    #     fullRank=TRUE
+    # )
+    # X <- predict(X, d_df)
+    # 
+    # I <- t(X) %*% diag(d_df$mean_pres * (1 - d_df$mean_pres)) %*% X
+    # return(log(det(I))) # want to MAXIMIZE information to minimize uncertainty
+    d_df <- if (!is.null(pred_df)) inner_join(pred_df, d, by=c("date", "site"), copy=copy) else d
+    d_df <- bind_rows(d_df, known_df)
+    
+    X <- dummyVars(
+        pres ~ -1 + tick_class + tick_class:tree_canopy + tick_class:elevation +
+            tick_class:jan_min_temp + tick_class:max_temp + tick_class:precipitation + tick_class:mean_rh,
+        data=d_df,
+        fullRank=TRUE
+    )
+    X <- predict(X, d_df)
+    
+    I <- t(X) %*% diag(d_df$mean_pres * (1 - d_df$mean_pres)) %*% X
+    return(log(det(I))) # want to MAXIMIZE information to minimize uncertainty
+}
+
+coarsen_x <- function(x, length=100) {
+    xc <- seq(min(x), max(x), length.out=length)
+    int <- findInterval(x, xc)
+    xc[int]
+# }
+
+get_matching_x <- function(pred_df, x) {
+    ret <- inner_join(pred_df, x, by=colnames(x))
+    if (nrow(ret) <= 1)
+        return(ret)
+    
+    ret |> 
+        select(date, site) |> 
+        slice_sample(n=1)
+}
+
+opt_u_local <- function(known_df, pred_df, d_so_far=tibble(), n_iter=1, num_loc=1, x_res=100) {
+    
+    pred_df_coarse <- mutate(pred_df, across(tree_canopy:mean_rh, coarsen_x, length=x_res))
+    
+    d_cur <- pred_df_coarse |> 
+        select(date, site) |> 
+        slice_sample(n=num_loc)
+    
+    x_choices <- pred_df_coarse |> 
+        select(tree_canopy:mean_rh) |> 
+        map(unique)
+    
+    x_names <- names(x_choices)
+    d_df_init <- inner_join(pred_df_coarse, d_cur, by=c("date", "site"))
+    x_cur <- d_df_init[1:num_loc, x_names]
+    
+    u_best <- local_utility(d_df_init, known_df)
+    
+    for (iter in 1:n_iter) {
+        for (s in 1:num_loc) { # modify each location in the current batch at a time
+            loc_best <- d_cur[s,]
+            for (xi in seq_along(x_choices)) { # modify each coordinate at a time
+                x_best <- x_cur[,xi]
+                nmatch <- 0
+                for (x_val in x_choices[[xi]]) {
+                    x_cur[,xi] <- x_val
+                    loc_new <- get_matching_x(pred_df_coarse, x_cur)
+                    if (nrow(loc_new) == 0)
+                        next
+                    nmatch <- nmatch + 1
+                    d_cur[s,] <- loc_new
+                    u <- local_utility(d_cur, known_df, pred_df_coarse)
+                    if (u > u_best) {
+                        u_best <- u
+                        x_best <- x_val
+                        loc_best <- loc_new
+                        print(paste0("Success! U=", u))
+                        print(paste0(names(x_choices)[xi], ": ", x_best))
+                        print(loc_best)
+                    }
+                }
+                x_cur[,xi] <- x_best
+                print(paste0("Num. valid: ", nmatch))
+            }
+            d_cur[s,] <- loc_best
+            print(d_cur)
+        }
+    }
+    return(d_cur)
+}
+
+d_xco <- opt_u_local(parks_mod, grid_mod, n_iter=5, num_loc=5, x_res=15)
+
+u_local_random <- map_dfr(rep(num_loc, each=100), ~{
+    d <- grid_mod |> 
+        select(date, site) |> 
+        slice_sample(n=.x)
+    
+    tibble_row(size=.x, d=list(d), u=local_utility(d, parks_mod, grid_mod, copy=TRUE))
+})
+
+ggplot(u_local_random, aes(size, u)) +
+    geom_point() +
+    annotate("point", x=5, y=local_utility(d_xco, parks_mod, grid_mod), col="red")
+
+d <- grid_mod |> 
     select(date, site) |> 
     slice_sample(n=1)
 
-tmp <- semi_join(grid_mod, tmp, by=c("date", "site")) |> 
-    bind_rows(parks_mod)
+local_utility(d, parks_mod, grid_mod)
+local_utility(tibble(), parks_mod)
 
-X <- dummyVars(
-    pres ~ -1 + tick_class + tick_class:land_cover + tick_class:tree_canopy + tick_class:elevation + 
-        tick_class:jan_min_temp + tick_class:max_temp + tick_class:precipitation + tick_class:mean_rh, 
-    data=mutate(tmp, land_cover=fct_drop(land_cover)),
-    fullRank=TRUE
-)
-X <- predict(X, tmp)
+tmp <- map_dbl(1:100, ~local_utility(d, parks_mod, grid_mod))
+
+u_xco <- utility(d_xco, parks_mod, full_df=grid_mod, n=50)
+
+sd(tmp)
+
+
 
 get_eta <- function(x) {
     eta <- sum(x * fit_all$summary.fixed$mean)
@@ -108,7 +222,7 @@ get_eta <- function(x) {
 
 tmp2 <- map(1:nrow(X), ~X[.x,] %*% get_eta(Xfull[.x,]) %*% t(X[.x,]))
 
-I <- t(X) %*% diag(tmp$mean_pres * (1 - tmp$mean_pres)) %*% X
+
 I <- reduce(tmp2, ~.x + .y)
 
 eigen(I)$values < -1e8
@@ -321,11 +435,12 @@ u_one_offs <- tibble(
     utility=c(u_none[1], u_resamp$Dfixed, u_parks_dec$Dfixed)
 )
 
-bind_rows(u_random, u_simple_var) |>
-    ggplot(aes(num_loc, utility, col=strat)) +
-    # geom_hline(aes(yintercept=utility, col=strat), data=u_one_offs, show.legend=FALSE) +
-    geom_hline(yintercept=u_one_offs$utility, col=c("gray40", "blue", "green")) +
-    annotate("text", label=u_one_offs$strat, y=u_one_offs$utility, col=c("gray40", "blue", "green"), x=22.5, hjust="left") +
+c("util-random", "util-simple-var") |> 
+    map_dfr(~mutate(readRDS(paste0("util-results/", .x, ".rds")), strat=.x)) |> 
+    ggplot(aes(num_loc, dopt, col=strat)) +
+    # geom_hline(yintercept=u_one_offs$utility, col=c("gray40", "blue", "green")) +
+    # annotate("text", label=u_one_offs$strat, y=u_one_offs$utility, col=c("gray40", "blue", "green"), x=22.5, hjust="left") +
+    annotate("text", label="Local", y=u_xco$dopt, col="red", x=22.5, hjust="left") +
     geom_point() +
     # geom_hline(yintercept=bo1$best$utility[1], col="red") +
     coord_cartesian(xlim = c(0, 21), clip = "off") +
