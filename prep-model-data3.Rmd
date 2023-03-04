@@ -37,166 +37,53 @@ library(lubridate)
 library(nngeo)
 ```
 
-Load the data
-```{r}
-parks <- read_csv("data-proc/parks-data-20-21.csv") # read data as created in tidy-parks-data.R
-```
-
-## Park data aggregation
-
-Before extracting covariates, do some preparations of the park data itself, aggregating and dropping data where
-needed. The following steps are taken preparing the data for model fitting:
-
-- A `month` variable is added with an integer representing the Month of the visit, as well as a `year` variable
-- The variables `sampling_method`, `species` and `sex` will not be used in the analysis, so we can marginalize these out to obtain counts for the factors we are interested in
-- For each visitation event (i.e. `site` and `date` pair), implicit zero counts are converted to explicit zero counts for each group. Note this should also remove the issue that "zero-count" visits were entered inconsistently (some had different genus/species combinations entered but with 0, some were `NA`, etc.)
-- We the `nest` the data pertaining to counts for each visit. This allows having a _visit_, the unit of analysis of importance for the covariates, to be a single row. Everything is then unnested at the end, since we are interested in modelling counts.
-
-```{r }
-parks_agg <- parks |> 
-    select(date, site, genus:count, sampling_method, lat, long) |> 
-    mutate(month=month(date), year=year(date)) |> 
-    group_by(date, site, genus, species, life_stage, month, year, lat, long) |> # marginalize over factors not considered 
-    summarise(count=sum(count)) |> 
-    ungroup() |> 
-    complete(nesting(date, site, month, year, lat, long), nesting(genus, species, life_stage), fill=list(count=0)) |> 
-    nest(counts=c(genus, species, life_stage, count))
-```
-
-Finally, we use the `lat` and `long` variables to project the data to a given CRS using the following function. `ref_raster` is a folder name containing raster files we will be using later. For now we use it only as a reference CRS, since it will very slow to convert these raster files to a different CRS.
+First, read the parks collection data and convert to a spatial object. Use the `lat` and `long` variables to project the data to a given CRS using the following function. `ref_raster` is a folder name containing raster files we will be using later. For now we use it only as a reference CRS, since it will very slow to convert these raster files to a different CRS.
 
 ```{r}
 project_parks <- function(parks, ref_raster="min-temp", pattern="bil$") {
     files <- list.files(paste0("geo-files/", ref_raster), pattern=pattern, full.names=TRUE)
     
-    parks |>
-        st_as_sf(crs="+proj=longlat +datum=WGS84", coords=c("long", "lat")) |>
-        st_transform(crs(raster(files[1])))
+    if (!is(parks, "sf"))
+        parks <- st_as_sf(parks, crs="+proj=longlat +datum=WGS84", coords=c("long", "lat"))
+    
+    st_transform(parks, crs(raster(files[1])))
 }
 
-parks_proj <- project_parks(parks_agg, "min-temp") # now can get reference CRS from here
+all_parks <- read_csv("data-proc/parks-design-space.csv") |> 
+    project_parks("min-temp") # now can get ref CRS from here
 ```
 
-## Create a spatial grid using the NLCD 2019 data
-
-These come as raster files with a 30m x 30m resolution. However, since PRISM only reports their variables at a 4km resolution, and since we will not be able to make monthly predictions at such a fine scale, the grid is aggregated to roughly 4km using the most dominant class within a 4km tile.
-
-The rasters are then converted to points form, creating a dataframe of points along a grid. The dataframe is then filtered to only contain points within the South Carolina border.
-
-```{r}
-get_landcover_grid <- function(fname=NULL, bounds=NULL, mult=1, poly=FALSE) {
-    if (is.null(bounds))
-        return(st_read(fname)) # then fname is a saved file so read it
-    
-    lcov <- raster("geo-files/land-cover/NLCD_2019_Land_Cover_L48_20210604_yDj0p7IM7PAX2WUUipna.tiff")
-    lcov_agg <- aggregate(lcov, 133*mult, fun=modal)
-
-    if (poly) {
-        to_func <- rasterToPolygons
-        suffix <- paste0("poly-", mult*4, "km.shp")
-    }
-    else {
-        to_func <- function(x) rasterToPoints(x, spatial=TRUE)
-        suffix <- paste0("grid-", mult*4, "km.shp")
-    }
-    lcov_sp <- to_func(lcov_agg) |> 
-        st_as_sf() |> 
-        rename(land_cover=NLCD_2019_Land_Cover_L48_20210604_yDj0p7IM7PAX2WUUipna) |> 
-        st_transform(crs(bounds))
-
-    u <- st_within(lcov_sp, bounds)
-    ret <- lcov_sp[map_lgl(u, ~length(.x) > 0),]
-    st_write(ret, paste0("geo-files/landcover-", suffix), delete_dsn=TRUE)
-    return(ret)
-}
-
-get_canopy_grid <- function(fname=NULL, bounds=NULL, mult=1, poly=FALSE) {
-    if (is.null(bounds))
-        return(st_read(fname))
-    
-    canopy <- raster("geo-files/land-cover/NLCD_2016_Tree_Canopy_L48_20190831_yDj0p7IM7PAX2WUUipna.tiff")
-    canopy_agg <- aggregate(canopy, 133*mult, fun=mean)
-
-    if (poly) {
-        to_func <- rasterToPolygons
-        suffix <- paste0("poly-", mult*4, "km.shp")
-    }
-    else {
-        to_func <- function(x) rasterToPoints(x, spatial=TRUE)
-        suffix <- paste0("grid-", mult*4, "km.shp")
-    }
-    canopy_sp <- to_func(canopy_agg) |> 
-        st_as_sf() |>
-        rename(tree_canopy=NLCD_2016_Tree_Canopy_L48_20190831_yDj0p7IM7PAX2WUUipna) |>
-        st_transform(crs(bounds))
-
-    u <- st_within(canopy_sp, bounds)
-    ret <- canopy_sp[map_lgl(u, ~length(.x) > 0),]
-    st_write(ret, paste0("geo-files/canopy-", suffix), delete_dsn=TRUE)
-    return(ret)
-}
-
-add_elevation_grid <- function(nlcd_grid) {
-    elevation <- raster("geo-files/elevation/PRISM_us_dem_4km_bil.bil")
-    elevation <- projectRaster(elevation, crs=crs(nlcd_grid))
-    if (any(st_is(nlcd_grid, "POLYGON")))
-        rvals <- raster::extract(elevation, nlcd_grid, fun=mean)
-    else
-        rvals <- raster::extract(elevation, nlcd_grid)
-    mutate(nlcd_grid, elevation=rvals, .after=tree_canopy)
-}
-```
+Also, get state boundary lines:
 
 ```{r}
 sc_state <- st_read("geo-files/south-carolina-county-boundaries.shp") |> 
-    st_transform(crs(parks_proj)) |> 
+    st_transform(crs(lcov)) |> 
     st_union() |> 
     nngeo::st_remove_holes()
 ```
 
-The grid can be loaded like this:
-
-```
-lcov_grid <- get_landcover_grid(sc_state) # grid will be proj to state (which should be proj to parks_proj)
-st_write(lcov_grid, "geo-files/landcover-grid.shp", delete_dsn=TRUE)
-```
-However, the aggregation can take a minute or two, so instead we load the grids made previously, and combine them.
-
-For some reason, the CRS needs to be reprojected even if they are loaded though.
+## Load rasters of the NLCD 2019 and elevation data
 
 ```{r}
-# lcov_grid <- get_landcover_grid("geo-files/landcover-grid-4km.shp") |> st_transform(crs(sc_state))
-# canopy_grid <- get_canopy_grid("geo-files/canopy-grid-4km.shp") |> rename(tree_canopy=tr_cnpy) |> st_transform(crs(sc_state))
-lcov_grid <- get_landcover_grid(bounds=sc_state, mult=1, poly=TRUE)
-canopy_grid <- get_canopy_grid(bounds=sc_state, mult=1, poly=TRUE)
-nlcd_grid <- st_join(lcov_grid, canopy_grid) |> add_elevation_grid()
+lcov <- raster("geo-files/land-cover/NLCD_2019_Land_Cover_L48_20210604_yDj0p7IM7PAX2WUUipna.tiff")
+canopy <- raster("geo-files/land-cover/NLCD_2016_Tree_Canopy_L48_20190831_yDj0p7IM7PAX2WUUipna.tiff")
+elevation <- raster("geo-files/elevation/PRISM_us_dem_4km_bil.bil")
+
+plot(lcov)
 ```
 
-
-Also, make a corresponding 16km resolution grid for making predictions, if it doesn't already exist:
-```{r}
-lcov_grid_16k <- get_landcover_grid(bounds=sc_state, mult=4)
-canopy_grid_16k <- get_canopy_grid(bounds=sc_state, mult=4)
-# lcov_grid_16k <- get_landcover_grid("geo-files/landcover-grid-16km.shp")
-# canopy_grid_16k <- get_canopy_grid("geo-files/canopy-grid-16km.shp") |> rename(tree_canopy=tr_cnpy)
-nlcd_grid_16k <- st_join(lcov_grid_16k, canopy_grid_16k) |> add_elevation_grid()
-```
-
-
-Now we make sure both covariates look reasonable
+## Extract design points from NLCD 2019 and elevation data
 
 ```{r}
-ggplot(nlcd_grid_16k) +
-    geom_sf(aes(col=as.factor(land_cover)), size=1)
-
-ggplot(nlcd_grid) +
-    geom_sf(aes(col=tree_canopy), size=1) +
-    scale_color_distiller(palette="Greens", direction=1)
+all_parks$land_cover <- raster::extract(lcov, st_transform(all_parks, crs(lcov)))
+all_parks$tree_canopy <- raster::extract(canopy, st_transform(all_parks, crs(lcov)))
+all_parks$elevation <- raster::extract(elevation, all_parks)
 ```
 
-## Monthly average of meteriological variables
 
-Using data from [PRISM](https://prism.oregonstate.edu/recent/). To do this, we begin by defining several functions that will be used for all the PRISM data extractions.
+## Monthly average of meteriological variables for parks
+
+Using data from [PRISM](https://prism.oregonstate.edu). To do this, we begin by defining several functions that will be used for all the PRISM data extractions.
 
 ```{r}
 get_raster_stack <- function(var, dates) {
@@ -220,160 +107,71 @@ load_prism_var <- function(var, dates, points) {
 
 extract_raster_points <- function(r, date, points) {
     rvals <- raster::extract(r, points)
-
     points |> 
         st_as_sf() |> 
         mutate(rval=rvals, date=date)
 }
-```
 
-First, set up a parallel session to take advantage of `furrr` and split up the expensive extraction work.
-
-```{r}
-plan(multisession, workers=4) # set up parallel session
-```
-
-```{r}
-future_dates <- as.Date(str_c("2022", 3:12, "01", sep="-"))
-vars <- c("min-temp", "max-temp", "mean-temp", "precipitation", "dew-point")
-met <- map(vars, ~load_prism_var(.x, future_dates, nlcd_grid))
-names(met) <- str_replace(vars, "-", "_")
-```
-
-Now combine the four variables and convert the dew point/temperature to mean relative humidity. We also add the month and year (month will be necessary for modeling temporal effects).
-
-```{r}
 # From Alduchov & Eskridge (2002)
 relative_humidity <- function(mean_temp, dew, beta=17.625, lambda=243.04) {
     num <- exp(beta * dew / (lambda + dew))
     denom <- exp(beta * mean_temp / (lambda + mean_temp))
     100 * num / denom
 }
+```
 
-covar_grid <- met$min_temp |>
+First, set up a parallel session to take advantage of `furrr` and split up the expensive extraction work.
+
+```{r}
+plan(multisession, workers=8) # set up parallel session
+```
+
+```{r}
+# dates_parks <- unique(floor_date(parks_proj$date, "months"))
+park_locations <- distinct(all_parks, site, geometry)
+vars <- c("min-temp", "max-temp", "mean-temp", "precipitation", "dew-point")
+
+met <- map(vars, ~load_prism_var(.x, unique(all_parks$date), park_locations))
+names(met) <- str_replace(vars, "-", "_")
+
+all_parks <- met$min_temp |>
     mutate(
         month=month(date),
-        year=year(date),
         max_temp=met$max_temp$max_temp,
         precipitation=met$precipitation$precipitation, 
         mean_rh=relative_humidity(met$mean_temp$mean_temp, met$dew_point$dew_point)
-    )
-```
-
-We also repeat this process for the 16km grid:
-```{r}
-met_16km <- map(vars, ~load_prism_var(.x, future_dates, nlcd_grid_16k))
-names(met_16km) <- str_replace(vars, "-", "_")
-
-covar_grid_16km <- met_16km$min_temp |>
-    mutate(
-        month=month(date),
-        year=year(date),
-        max_temp=met_16km$max_temp$max_temp,
-        precipitation=met_16km$precipitation$precipitation, 
-        mean_rh=relative_humidity(met_16km$mean_temp$mean_temp, met_16km$dew_point$dew_point)
-    )
-```
-
-As an example, we can view the precipitation normals on April 1st:
-
-```{r}
-ggplot(filter(covar_grid, date == "2022-07-01")) +
-    geom_sf(aes(col=precipitation), size=1)
-```
-
-## Annual minima on grid
-
-Now add annual temperature minima for 2020 and 2021, **defined as the minimum daily temperature at a location, averaged over the month of January**, again using data from PRISM. These new values are then added to `covar_grid` as a new column.
-
-```{r}
-dates_min <- as.Date("2022-01-01")
-
-tmin <- load_prism_var("min-temp", dates_min, nlcd_grid) |> 
-    mutate(year=year(date))
-
-covar_grid <- st_join(covar_grid, select(tmin, jan_min_temp=min_temp))
-```
-
-```{r}
-tmin_16km <- load_prism_var("min-temp", dates_min, nlcd_grid_16k) |> 
-    mutate(year=year(date))
-
-covar_grid_16km <- st_join(covar_grid_16km, select(tmin_16km, jan_min_temp=min_temp))
-```
-
-
-Let's make the minimum temperature looks reasonable:
-
-```{r}
-ggplot(covar_grid_16km) +
-    geom_sf(aes(col=jan_min_temp), size=0.9) +
-    scale_color_viridis_c() +
-    labs(col="Mean January minimum (C)")
-```
-
-and save the grid of covariates, both resolutions, for later.
-
-```{r}
-st_write(covar_grid, "geo-files/covar-grid.shp", delete_dsn=TRUE)
-st_write(covar_grid_16km, "geo-files/covar-grid-16km.shp", delete_dsn=TRUE)
-```
-
-
-## Extract covariates from park locations
-
-Now we can repeat the extraction from the centroid of each park. First, to obtain the NLCD variables, we assign a park the value of the closest point on the previously made 4km resolution `covar_grid`, since this is the most precise resolution available for all the covariates.
-
-```{r}
-grid_sub <- select(covar_grid, land_cover, tree_canopy, elevation) # to avoid ugly st_join behaviour
-parks_proj <- st_join(parks_proj, grid_sub, st_nearest_feature)
-```
-
-And now the meteorological covariates, again using the `load_prism_var` function, but this time with the points of each each site.
-
-```{r}
-park_locations <- distinct(parks_proj, site, geometry)
-dates_parks <- unique(floor_date(parks_proj$date, "months"))
-
-met_parks <- map(vars, ~load_prism_var(.x, future_dates, park_locations))
-names(met_parks) <- str_replace(vars, "-", "_")
-
-covar_park <- met_parks$min_temp |>
-    mutate(
-        month=month(date),
-        max_temp=met_parks$max_temp$max_temp,
-        precipitation=met_parks$precipitation$precipitation, 
-        mean_rh=relative_humidity(met_parks$mean_temp$mean_temp, met_parks$dew_point$dew_point)
     ) |> 
-    select(-date)
+    inner_join(st_drop_geometry(all_parks))
 
-ann_mintemp_park <- load_prism_var("min-temp", dates_min, park_locations) |> 
-    st_drop_geometry() |> 
-    rename(jan_min_temp=min_temp) |> 
-    select(-date)
-```
-
-Combine the results, and join with the parks data so that tick `count` and the covariates appear together.
-
-```{r}
-parks_proj <- parks_proj |> 
-    left_join(ann_mintemp_park, by=c("site")) |>
-    left_join(st_drop_geometry(covar_park), by=c("month", "site")) # joining by site name X date is OK for the park locations
+ann_mintemp <- load_prism_var("min-temp", as.Date("2023-01-01"), park_locations) |> 
+    rename(jan_min_temp=min_temp)
+all_parks <- left_join(all_parks, select(st_drop_geometry(ann_mintemp), -date))
 ```
 
 Make sure everything looks OK:
 
 ```{r}
-ggplot(parks_proj) +
+ggplot(all_parks) +
     geom_sf(data=sc_state, col="gray40") +
-    geom_sf(aes(col=jan_min_temp, size=jan_min_temp), shape=1)
+    geom_sf(aes(col=max_temp, size=max_temp), shape=1) +
+    facet_wrap(~month)
+```
+
+## Match covariates with existing data
+
+Now that the covariates are extracted for each possible visit, we can match this with the existing surveillance data of visits that have already happened.
+
+```{r}
+park_counts <- read_csv("data-proc/parks-data-20-21.csv") |>
+    project_parks("min-temp")
+
+park_counts <- left_join(park_counts, select(st_drop_geometry(all_parks), -date), by=c("site", "month"))
 ```
 
 We can double check the count data remains as expected as well. Here we plot the total monthly count across tick groups, coloring by the relative humidity (average between 2020 and 2021).
 
 ```{r, fig.width=9.5, fig.height=6}
-parks_proj |> 
-    unnest(counts) |> 
+park_counts |> 
     group_by(month, site) |> 
     summarise(mean_rh=mean(mean_rh), tot_count=sum(count)) |> 
     ggplot() +
@@ -386,8 +184,193 @@ parks_proj |>
 
 ## Save the parks data
 
-A separate database is saved just for the observed points (we will use these data separately from the grid for the model comparison study).
+A separate database is saved just for the observed points (we will use these data separately for the model comparison study, and to add to during the design part).
 
 ```{r}
-st_write(unnest(parks_proj, counts), "geo-files/parks-with-covars.shp", delete_dsn=TRUE)
+st_write(all_parks, "data-proc/parks-design-space.shp", delete_dsn=TRUE)
+st_write(park_counts, "data-proc/parks-observed.shp", delete_dsn=TRUE)
 ```
+
+<!-- ## Create a spatial grid using the NLCD 2019 data -->
+
+<!-- These come as raster files with a 30m x 30m resolution. However, since PRISM only reports their variables at a 4km resolution, and since we will not be able to make monthly predictions at such a fine scale, the grid is aggregated to roughly 4km using the most dominant class within a 4km tile. -->
+
+<!-- The rasters are then converted to points form, creating a dataframe of points along a grid. The dataframe is then filtered to only contain points within the South Carolina border. -->
+
+<!-- ```{r} -->
+<!-- get_landcover_grid <- function(fname=NULL, bounds=NULL, mult=1, poly=FALSE) { -->
+<!--     if (is.null(bounds)) -->
+<!--         return(st_read(fname)) # then fname is a saved file so read it -->
+
+<!--     lcov <- raster("geo-files/land-cover/NLCD_2019_Land_Cover_L48_20210604_yDj0p7IM7PAX2WUUipna.tiff") -->
+<!--     lcov_agg <- aggregate(lcov, 133*mult, fun=modal) -->
+
+<!--     if (poly) { -->
+<!--         to_func <- rasterToPolygons -->
+<!--         suffix <- paste0("poly-", mult*4, "km.shp") -->
+<!--     } -->
+<!--     else { -->
+<!--         to_func <- function(x) rasterToPoints(x, spatial=TRUE) -->
+<!--         suffix <- paste0("grid-", mult*4, "km.shp") -->
+<!--     } -->
+<!--     lcov_sp <- to_func(lcov_agg) |>  -->
+<!--         st_as_sf() |>  -->
+<!--         rename(land_cover=NLCD_2019_Land_Cover_L48_20210604_yDj0p7IM7PAX2WUUipna) |>  -->
+<!--         st_transform(crs(bounds)) -->
+
+<!--     u <- st_within(lcov_sp, bounds) -->
+<!--     ret <- lcov_sp[map_lgl(u, ~length(.x) > 0),] -->
+<!--     st_write(ret, paste0("geo-files/landcover-", suffix), delete_dsn=TRUE) -->
+<!--     return(ret) -->
+<!-- } -->
+
+<!-- get_canopy_grid <- function(fname=NULL, bounds=NULL, mult=1, poly=FALSE) { -->
+<!--     if (is.null(bounds)) -->
+<!--         return(st_read(fname)) -->
+
+<!--     canopy <- raster("geo-files/land-cover/NLCD_2016_Tree_Canopy_L48_20190831_yDj0p7IM7PAX2WUUipna.tiff") -->
+<!--     canopy_agg <- aggregate(canopy, 133*mult, fun=mean) -->
+
+<!--     if (poly) { -->
+<!--         to_func <- rasterToPolygons -->
+<!--         suffix <- paste0("poly-", mult*4, "km.shp") -->
+<!--     } -->
+<!--     else { -->
+<!--         to_func <- function(x) rasterToPoints(x, spatial=TRUE) -->
+<!--         suffix <- paste0("grid-", mult*4, "km.shp") -->
+<!--     } -->
+<!--     canopy_sp <- to_func(canopy_agg) |>  -->
+<!--         st_as_sf() |> -->
+<!--         rename(tree_canopy=NLCD_2016_Tree_Canopy_L48_20190831_yDj0p7IM7PAX2WUUipna) |> -->
+<!--         st_transform(crs(bounds)) -->
+
+<!--     u <- st_within(canopy_sp, bounds) -->
+<!--     ret <- canopy_sp[map_lgl(u, ~length(.x) > 0),] -->
+<!--     st_write(ret, paste0("geo-files/canopy-", suffix), delete_dsn=TRUE) -->
+<!--     return(ret) -->
+<!-- } -->
+
+<!-- add_elevation_grid <- function(nlcd_grid) { -->
+<!--     elevation <- raster("geo-files/elevation/PRISM_us_dem_4km_bil.bil") -->
+<!--     elevation <- projectRaster(elevation, crs=crs(nlcd_grid)) -->
+<!--     if (any(st_is(nlcd_grid, "POLYGON"))) -->
+<!--         rvals <- raster::extract(elevation, nlcd_grid, fun=mean) -->
+<!--     else -->
+<!--         rvals <- raster::extract(elevation, nlcd_grid) -->
+<!--     mutate(nlcd_grid, elevation=rvals, .after=tree_canopy) -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- sc_state <- st_read("geo-files/south-carolina-county-boundaries.shp") |>  -->
+<!--     st_transform(crs(parks_proj)) |>  -->
+<!--     st_union() |>  -->
+<!--     nngeo::st_remove_holes() -->
+<!-- ``` -->
+
+<!-- The grid can be loaded like this: -->
+
+<!-- ``` -->
+<!-- lcov_grid <- get_landcover_grid(sc_state) # grid will be proj to state (which should be proj to parks_proj) -->
+<!-- st_write(lcov_grid, "geo-files/landcover-grid.shp", delete_dsn=TRUE) -->
+<!-- ``` -->
+<!-- However, the aggregation can take a minute or two, so instead we load the grids made previously, and combine them. -->
+
+<!-- For some reason, the CRS needs to be reprojected even if they are loaded though. -->
+
+<!-- ```{r} -->
+<!-- # lcov_grid <- get_landcover_grid("geo-files/landcover-grid-4km.shp") |> st_transform(crs(sc_state)) -->
+<!-- # canopy_grid <- get_canopy_grid("geo-files/canopy-grid-4km.shp") |> rename(tree_canopy=tr_cnpy) |> st_transform(crs(sc_state)) -->
+<!-- lcov_grid <- get_landcover_grid(bounds=sc_state, mult=1, poly=TRUE) -->
+<!-- canopy_grid <- get_canopy_grid(bounds=sc_state, mult=1, poly=TRUE) -->
+<!-- nlcd_grid <- st_join(lcov_grid, canopy_grid) |> add_elevation_grid() -->
+<!-- ``` -->
+
+
+<!-- Also, make a corresponding 16km resolution grid for making predictions, if it doesn't already exist: -->
+<!-- ```{r} -->
+<!-- lcov_grid_16k <- get_landcover_grid(bounds=sc_state, mult=4) -->
+<!-- canopy_grid_16k <- get_canopy_grid(bounds=sc_state, mult=4) -->
+<!-- # lcov_grid_16k <- get_landcover_grid("geo-files/landcover-grid-16km.shp") -->
+<!-- # canopy_grid_16k <- get_canopy_grid("geo-files/canopy-grid-16km.shp") |> rename(tree_canopy=tr_cnpy) -->
+<!-- nlcd_grid_16k <- st_join(lcov_grid_16k, canopy_grid_16k) |> add_elevation_grid() -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- vars <- c("min-temp", "max-temp", "mean-temp", "precipitation", "dew-point") -->
+<!-- met <- map(vars, ~load_prism_var(.x, future_dates, nlcd_grid)) -->
+<!-- names(met) <- str_replace(vars, "-", "_") -->
+<!-- ``` -->
+
+<!-- Now combine the four variables and convert the dew point/temperature to mean relative humidity. We also add the month and year (month will be necessary for modeling temporal effects). -->
+
+<!-- ```{r} -->
+
+<!-- covar_grid <- met$min_temp |> -->
+<!--     mutate( -->
+<!--         month=month(date), -->
+<!--         year=year(date), -->
+<!--         max_temp=met$max_temp$max_temp, -->
+<!--         precipitation=met$precipitation$precipitation,  -->
+<!--         mean_rh=relative_humidity(met$mean_temp$mean_temp, met$dew_point$dew_point) -->
+<!--     ) -->
+<!-- ``` -->
+
+<!-- We also repeat this process for the 16km grid: -->
+<!-- ```{r} -->
+<!-- met_16km <- map(vars, ~load_prism_var(.x, future_dates, nlcd_grid_16k)) -->
+<!-- names(met_16km) <- str_replace(vars, "-", "_") -->
+
+<!-- covar_grid_16km <- met_16km$min_temp |> -->
+<!--     mutate( -->
+<!--         month=month(date), -->
+<!--         year=year(date), -->
+<!--         max_temp=met_16km$max_temp$max_temp, -->
+<!--         precipitation=met_16km$precipitation$precipitation,  -->
+<!--         mean_rh=relative_humidity(met_16km$mean_temp$mean_temp, met_16km$dew_point$dew_point) -->
+<!--     ) -->
+<!-- ``` -->
+
+<!-- As an example, we can view the precipitation normals on April 1st: -->
+
+<!-- ```{r} -->
+<!-- ggplot(filter(covar_grid, date == "2022-07-01")) + -->
+<!--     geom_sf(aes(col=precipitation), size=1) -->
+<!-- ``` -->
+
+<!-- ## Annual minima on grid -->
+
+<!-- Now add annual temperature minima for 2020 and 2021, **defined as the minimum daily temperature at a location, averaged over the month of January**, again using data from PRISM. These new values are then added to `covar_grid` as a new column. -->
+
+<!-- ```{r} -->
+<!-- dates_min <- as.Date("2022-01-01") -->
+
+<!-- tmin <- load_prism_var("min-temp", dates_min, nlcd_grid) |>  -->
+<!--     mutate(year=year(date)) -->
+
+<!-- covar_grid <- st_join(covar_grid, select(tmin, jan_min_temp=min_temp)) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- tmin_16km <- load_prism_var("min-temp", dates_min, nlcd_grid_16k) |>  -->
+<!--     mutate(year=year(date)) -->
+
+<!-- covar_grid_16km <- st_join(covar_grid_16km, select(tmin_16km, jan_min_temp=min_temp)) -->
+<!-- ``` -->
+
+
+<!-- Let's make the minimum temperature looks reasonable: -->
+
+<!-- ```{r} -->
+<!-- ggplot(covar_grid_16km) + -->
+<!--     geom_sf(aes(col=jan_min_temp), size=0.9) + -->
+<!--     scale_color_viridis_c() + -->
+<!--     labs(col="Mean January minimum (C)") -->
+<!-- ``` -->
+
+<!-- and save the grid of covariates, both resolutions, for later. -->
+
+<!-- ```{r} -->
+<!-- st_write(covar_grid, "geo-files/covar-grid.shp", delete_dsn=TRUE) -->
+<!-- st_write(covar_grid_16km, "geo-files/covar-grid-16km.shp", delete_dsn=TRUE) -->
+<!-- ``` -->

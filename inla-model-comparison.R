@@ -6,6 +6,8 @@ library(gridExtra)
 
 source("other-helpers.R")
 
+inla.setOption(inla.mode="classic")
+
 ## Format the fixed effects for the INLA formula, with 1=single slope to 4=spline for each species
 get_fx <- function(var, level) {
     case_when(
@@ -46,15 +48,16 @@ names(fx_terms) <- parks_data |>
     select(land_cover:mean_rh) |> 
     colnames()
 
-# TODO: detailed writeup on these choices
-# a bit more precision than for linear fixed effects, since with scaled covars less chance to "move around" there
-prec_pri <- list(prec=list(prior="loggamma", param=c(2, 0.1)))
-prec_pri_str <- "list(prec=list(prior='loggamma', param=c(2, 0.1)))" # this one is for get_fx
+# prior choices:
+# prec for fixed effect = 0.2 -> an increase in 1 std. dev. has 95% chance of causing a 99% change in risk (each covar has sufficient chance to entirely describe risk)
+# prec for random effects AND splines = Gamma(1, 0.1) -> going for more precision than for linear fixed effects, since RWs have so much room to move around per step. A change in "unit" has 2% chance of prec < 0.2
+prec_pri <- list(prec=list(prior="loggamma", param=c(1, 0.1)))
+prec_pri_str <- "list(prec=list(prior='loggamma', param=c(1, 0.1)))" # this one is for get_fx
 
 fx_models <- list(
     slope=get_formula(fx_terms),
     `slope:species`=get_formula(fx_terms + 1),
-    spline=get_formula(c(land_cover=2, fx_terms + 2)),
+    spline=get_formula(c(land_cover=2, fx_terms + 2)), # TODO: problem was here
     `spline:species`=get_formula(c(land_cover=2, fx_terms + 3))
     # `slope:species`=get_formula(fx_terms + 1),
     # spline=get_formula(c(land_cover=2, fx_terms[-1] + 2)),

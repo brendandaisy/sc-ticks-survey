@@ -314,10 +314,73 @@ parks_tidy |>
     geom_sf_text(aes(label=site), alpha=0.75)
 ```
 
-## Save the final combined data
+## Park data aggregation
+
+Before extracting covariates, do some preparations of the park data itself, aggregating and dropping data where
+needed. The following steps are taken preparing the data for model fitting:
+
+- A `month` variable is added with an integer representing the Month of the visit, as well as a `year` variable
+- The variables `sampling_method`, `species` and `sex` will not be used in the analysis, so we can marginalize these out to obtain counts for the factors we are interested in
+- For each visitation event (i.e. `site` and `date` pair), implicit zero counts are converted to explicit zero counts for each group. Note this should also remove the issue that "zero-count" visits were entered inconsistently (some had different genus/species combinations entered but with 0, some were `NA`, etc.)
+
+```{r }
+parks_agg <- parks |> 
+    select(date, site, genus:count, sampling_method, lat, long) |> 
+    mutate(month=month(date), year=year(date)) |> 
+    group_by(date, site, genus, species, life_stage, month, year, lat, long) |> # sum over factors not considered 
+    summarise(count=sum(count)) |> 
+    ungroup() |> 
+    complete(nesting(date, site, month, year, lat, long), nesting(genus, species, life_stage), fill=list(count=0))
+```
+
+## Add in unvisited months and parks
 
 ```{r}
-write_csv(parks_tidy, "data-proc/parks-data-20-21.csv")
+unvis_sites <- tribble(
+    ~site, ~lat, ~long,
+    "Table Rock", 35.032640927605485, -82.7271938279698,
+    "Jones Gap", 35.12555313398255, -82.5754658752354,
+    "Devil's Fork", 34.95055519854355, -82.94391846642118,
+    "Oconee", 34.863179412878964, -83.09712818937328,
+    "Oconee Station", 34.848679225043874, -83.07574196914628,
+    "Andrew Jackson", 34.84486294486581, -80.8044050032484,
+    "Landsford Canal", 34.79082500476666, -80.88079380447405,
+    "Rose Hill Plantation", 34.60687362391703, -81.66332621587149,
+    "Lake Hartwell", 34.493648203336136, -83.03298757451371,
+    "Battle of Musgrove Hill", 34.59339079648682, -81.85417202131349,
+    "Chester", 34.677751723915385, -81.23744524864507,
+    "Lake Wateree", 34.43418018255667, -80.87166347617365,
+    "Calhoun Falls", 34.105765147303025, -82.62196231532933,
+    "Hickory Knob", 33.88256646412824, -82.4333906070049,
+    "Hamilton Branch", 33.756108322958376, -82.22176914924344,
+    "Redcliffe Plantation", 33.41789788740566, -81.87029380517896,
+    "Battle of Rivers Bridge", 33.06051846902454, -81.08900798079492,
+    "Hampton Plantation", 33.19872655222871, -79.43867311702444,
+    "Givhans Ferry", 33.03116211665228, -80.38644799999524,
+    "Colonial Dorchester", 32.94728814896889, -80.17067577318765,
+    "Charles Town Landing", 32.80565316549554, -79.9920068817677,
+    "Congaree", 33.822371447784256, -80.81703477245668,
+    "Congaree - Bates Ferry", 33.7788819780377, -80.64796977318345,
+    "Francis Marion - I'on Swamp", 33.00508709581207, -79.6884070292055,
+    "Francis Marion - Hell Hole Bay", 33.22092109261856, -79.69882688865442,
+    "Waccamaw", 33.67905871726114, -79.16063707607331,
+    "Sumter - Molly's Rock", 34.38879017701415, -81.54368914556099,
+)
+
+future_dates <- as.Date(str_c("2023", 1:12, "01", sep="-"))
+
+all_parks_latlong <- parks_agg |> 
+    distinct(site, lat, long) |> 
+    bind_rows(unvis_sites) |> 
+    expand_grid(date=future_dates)
 ```
+
+
+## Save the final aggregated data
+
+```{r}
+write_csv(parks_agg, "data-proc/parks-data-20-21.csv")
+write_csv(all_parks_latlong, "data-proc/parks-design-space.csv")
+``` 
 
 

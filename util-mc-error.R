@@ -3,7 +3,9 @@ library(purrr)
 library(tidyverse)
 library(sf)
 
-install.packages("furrr")
+library(tidyverse)
+library(tidygraph)
+library(ggraph)
 library(furrr)
 
 inla.setOption(inla.mode="classic", num.threads="16:1")

@@ -30,7 +30,7 @@ parks_data <- read_parks_sf("geo-files/parks-with-covars.shp", drop=min_temp) |>
 
 # Predict expected risk across grid, for sampling---------------------------------
 
-# fit_all <- fit_model(formula_jsdm(all_data), all_data, fx_prec=0.2)
+# fit_all <- fit_model(formula_bed(), all_data, fx_prec=0.2)
 fit_all <- readRDS("inla-fit-all-data.rds")
 fit_all$summary.fixed # assert: fixed effects were included in the model correctly?
 
@@ -92,18 +92,6 @@ u_simple_var <- load_util_res(u_simple_var, "simple-var", n=n)
 local_utility <- function(d, known_df, pred_df=NULL, copy=FALSE) {
 # TODO: revisit at some point whether known_df can be removed, or can be used for only one tick species
 # probably can, but confusing especially with the dummy matrix
-    # d_df <- if (!is.null(pred_df)) inner_join(pred_df, d, by=c("date", "site")) else d
-    # d_df <- bind_rows(d_df, known_df)
-    # 
-    # X <- dummyVars(
-    #     formula_bed(), 
-    #     data=mutate(d_df, land_cover=fct_drop(land_cover)),
-    #     fullRank=TRUE
-    # )
-    # X <- predict(X, d_df)
-    # 
-    # I <- t(X) %*% diag(d_df$mean_pres * (1 - d_df$mean_pres)) %*% X
-    # return(log(det(I))) # want to MAXIMIZE information to minimize uncertainty
     d_df <- if (!is.null(pred_df)) inner_join(pred_df, d, by=c("date", "site"), copy=copy) else d
     d_df <- bind_rows(d_df, known_df)
     
@@ -123,7 +111,7 @@ coarsen_x <- function(x, length=100) {
     xc <- seq(min(x), max(x), length.out=length)
     int <- findInterval(x, xc)
     xc[int]
-# }
+}
 
 get_matching_x <- function(pred_df, x) {
     ret <- inner_join(pred_df, x, by=colnames(x))
@@ -135,7 +123,7 @@ get_matching_x <- function(pred_df, x) {
         slice_sample(n=1)
 }
 
-opt_u_local <- function(known_df, pred_df, d_so_far=tibble(), n_iter=1, num_loc=1, x_res=100) {
+opt_coord_exchange <- function(known_df, pred_df, d_so_far=tibble(), n_iter=1, num_loc=1, x_res=100) {
     
     pred_df_coarse <- mutate(pred_df, across(tree_canopy:mean_rh, coarsen_x, length=x_res))
     
@@ -144,14 +132,14 @@ opt_u_local <- function(known_df, pred_df, d_so_far=tibble(), n_iter=1, num_loc=
         slice_sample(n=num_loc)
     
     x_choices <- pred_df_coarse |> 
-        select(tree_canopy:mean_rh) |> 
+        select(land_cover:mean_rh) |> 
         map(unique)
     
     x_names <- names(x_choices)
     d_df_init <- inner_join(pred_df_coarse, d_cur, by=c("date", "site"))
     x_cur <- d_df_init[1:num_loc, x_names]
     
-    u_best <- local_utility(d_df_init, known_df)
+    u_best <- utility(d_df_init, known_df, n=10, u_only=TRUE)
     
     for (iter in 1:n_iter) {
         for (s in 1:num_loc) { # modify each location in the current batch at a time
@@ -166,7 +154,7 @@ opt_u_local <- function(known_df, pred_df, d_so_far=tibble(), n_iter=1, num_loc=
                         next
                     nmatch <- nmatch + 1
                     d_cur[s,] <- loc_new
-                    u <- local_utility(d_cur, known_df, pred_df_coarse)
+                    u <- utility(d_cur, known_df, full_df=pred_df_coarse, n=10, u_only=TRUE)
                     if (u > u_best) {
                         u_best <- u
                         x_best <- x_val
@@ -186,7 +174,7 @@ opt_u_local <- function(known_df, pred_df, d_so_far=tibble(), n_iter=1, num_loc=
     return(d_cur)
 }
 
-d_xco <- opt_u_local(parks_mod, grid_mod, n_iter=5, num_loc=5, x_res=15)
+d_xco <- opt_coord_exchange(parks_mod, grid_mod, n_iter=5, num_loc=1, x_res=10)
 
 u_local_random <- map_dfr(rep(num_loc, each=100), ~{
     d <- grid_mod |> 
@@ -211,40 +199,16 @@ tmp <- map_dbl(1:100, ~local_utility(d, parks_mod, grid_mod))
 
 u_xco <- utility(d_xco, parks_mod, full_df=grid_mod, n=50)
 
-sd(tmp)
+tmp <- mutate(grid_mod, across(tree_canopy:mean_rh, coarsen_x, length=10))
 
-
-
-get_eta <- function(x) {
-    eta <- sum(x * fit_all$summary.fixed$mean)
-    exp(eta) / (1 + exp(eta))^2
-}
-
-tmp2 <- map(1:nrow(X), ~X[.x,] %*% get_eta(Xfull[.x,]) %*% t(X[.x,]))
-
-
-I <- reduce(tmp2, ~.x + .y)
-
-eigen(I)$values < -1e8
-cov_mat <- solve(I)
-
-image(as(cov_mat, "sparseMatrix"))
-
-I %*% cov_mat
-det(cov_mat)
-sum(diag(cov_mat))
+distinct(tmp, across(land_cover:mean_rh))
 
 # "One-off" design strategies-----------------------------------------------------
 
-## Utility with no additional sampling
+## 1. Utility with no additional sampling
 u_none <- util_rep(prep_new_data(parks_mod, scale=FALSE), sel_list_inla(parks_mod))
 
-## Reuse the same schedule from 2021
-d_resamp <- filter(parks_mod, lubridate::year(date) == 2021)
-d_resamp$pres <- NA
-u_resamp <- utility(d_resamp, parks_mod, n=n)
-
-## Visit all 30 parks again in December
+## 2-3. Visit all 30 parks again in December/June
 all_data_sp <- append_pred_grid(parks_data)
 
 d_parks_dec <- parks_data |> 
@@ -257,12 +221,30 @@ d_parks_dec <- parks_data |>
 d_parks_dec$pres <- NA
 u_parks_dec <- utility(d_parks_dec, parks_mod, n=n)
 
+d_parks_jun <- parks_data |> 
+    distinct(site, geometry) |> 
+    st_join(filter(all_data_sp, month == 6), st_nearest_feature) |> 
+    st_drop_geometry() |> 
+    rename(site=site.x) |> 
+    select(-site.y)
+
+d_parks_jun$pres <- NA
+u_parks_jun <- utility(d_parks_jun, parks_mod, n=n)
+
 rm(all_data_sp) # remove this for space since no longer needed
 
-# slice_sample(pp_grid, n=10) |> 
-#     mutate(land_cover=as.numeric(land_cover)) |> 
-#     select(land_cover:mean_rh) |>
-#     dist()
+## 4. Reuse the same schedule from 2021
+d_resamp <- filter(parks_mod, lubridate::year(date) == 2021)
+d_resamp$pres <- NA
+u_resamp <- utility(d_resamp, parks_mod, n=n)
+
+u_one_offs <- tibble(
+    strat=c("    None (0)", "    Revisit in\n    June (30)", "    Revisit in\n    December (30)", "    Repeat 2021\n    schedule (111)"), 
+    design=list(tibble(), distinct(d_parks_jun, date, site), distinct(d_parks_dec, date, site), distinct(d_resamp, date, site)),
+    utility=c(u_none[1], u_parks_jun$dopt, u_parks_dec$dopt, u_resamp$dopt)
+)
+
+saveRDS(u_one_offs, "util-results/util-one-offs.rds")
 
 # Bayesian optimization-----------------------------------------------------------
 
@@ -371,81 +353,108 @@ utils0 |>
     slice(1) |> 
     utility(parks_mod, n=1, full_df=grid_mod, by=c("X", "Y", "t"))
 
-# Simulated Annealing-------------------------------------------------------------
-
-# T0 is initial order of mag. worse a prop can be, for acc. prob. 0.37
-# alpha > 1 means faster cooling (less acceptance of worse moves)
-simulated_annealing <- function(
-        pred_df, known_df, B=5, iter=10, alpha=1, T0=1, n_est=5, 
-        d_so_far=tibble(), d_init=NULL, weight_by=var_eta
-) {
-    d_cand <- pred_df |> 
-        group_by(date, site) |> 
-        summarise(var_eta=mean(var_eta), .groups="drop")
-    
-    if (is.null(d_init))
-        d_curr <- d_best <- slice_sample(d_cand, n=B, weight_by={{weight_by}}) |> bind_rows(d_so_far)
-    else
-        d_curr <- d_best <- bind_rows(d_so_far, d_init)
-    u_curr <- u_best <- util_bd_opt(d_curr, known_df, n=n_est, full_df=pp_grid, tibble=FALSE)
-    i_best <- 0
-    
-    T_sched <- T0*seq(1, 0, length.out=iter)^alpha
-    for (i in 1:iter) {
-        next_pt <- anti_join(d_cand, d_curr, by=c("date", "site")) |> 
-            slice_sample(n=1, weight_by={{weight_by}})
-        
-        d_prop <- slice_sample(d_curr, n=nrow(d_curr)-1) |> 
-            bind_rows(next_pt)
-        
-        u_prop <- util_bd_opt(d_prop, pp_parks, n=n_est, full_df=pp_grid, tibble=FALSE)
-        if (u_prop > u_best) {
-            i_best <- i
-            d_curr <- d_best <- d_prop
-            u_curr <- u_best <- u_prop
-        } else if (u_prop > u_curr) {
-            d_curr <- d_prop
-            u_curr <- u_prop
-        } else if (runif(1) < exp((log10(u_prop) - log10(u_curr))/T_sched[i])) {
-            d_curr <- d_prop
-            u_curr <- u_prop
-        }
-        print(paste0("Current log(U)=", round(log(u_curr), 3), " at i=", i))
-    }
-    return(list(d=d_best, u_approx=u_best, at=i_best))
-}
-
-sa_res <- simulated_annealing(pp_grid, pp_parks, B=5, iter=120, alpha=0.9, n_est=50, d_so_far=sa_res$d)
-
-u_sim_ann <- util_bd_opt(sa_res$d, pp_parks, n=n, full_df=pp_grid) |> 
-    mutate(B=nrow(sa_res$d))
-
-saveRDS(sa_res, "util-exper/sa-test-alpha=0.9-nest=15-iter=200.rds")
-
-save_util_res(u_sim_ann, "sim-ann", n=n)
-
-# TODO clear this works now. Plan I'd say is to write methods now.
-# After any minor updates that become known I want to do, its time to
-# run the non-random strategies with like n=200 and LEAVE THINGS AS FINAL
 
 # Plot the results comparing all strategies---------------------------------------
 
-u_one_offs <- tibble(
-    strat=c("None (0)", "Repeat 2021 schedule (111)", "Revisit in December (30)"), 
-    utility=c(u_none[1], u_resamp$Dfixed, u_parks_dec$Dfixed)
-)
+strats <- c("util-random", "util-simple-var", "util-sim-ann-local-alpha0pt9-T02", "util-sim-ann")
+names(strats) <- c("Random", "Simple Var", "Local", "Simulated Annealing")
 
-c("util-random", "util-simple-var") |> 
+u_res <- strats |> 
     map_dfr(~mutate(readRDS(paste0("util-results/", .x, ".rds")), strat=.x)) |> 
-    ggplot(aes(num_loc, dopt, col=strat)) +
-    # geom_hline(yintercept=u_one_offs$utility, col=c("gray40", "blue", "green")) +
-    # annotate("text", label=u_one_offs$strat, y=u_one_offs$utility, col=c("gray40", "blue", "green"), x=22.5, hjust="left") +
-    annotate("text", label="Local", y=u_xco$dopt, col="red", x=22.5, hjust="left") +
-    geom_point() +
-    # geom_hline(yintercept=bo1$best$utility[1], col="red") +
-    coord_cartesian(xlim = c(0, 21), clip = "off") +
+    mutate(strat=fct_recode(strat, !!!strats))
+
+u_res_random <- filter(u_res, strat == "Random")
+
+u_res <- u_res_random |> 
+    filter(num_loc == 1) |> 
+    slice_max(dopt, n=1) |> 
+    mutate(strat="Simulated Annealing") |> 
+    bind_rows(u_res)
+
+u_rand_mean <- u_res_random |> 
+    group_by(num_loc) |> 
+    summarise(mean=mean(dopt))
+    
+gg <- ggplot(u_res_random, aes(factor(num_loc), dopt)) +
+    geom_violin(fill="#9ac9e7", col="gray70", alpha=0.75)  +
+    geom_point(col="#9ac9e7", size=0.9) +
+    coord_cartesian(clip="off") +
+    ylim(NA, 30) +
     labs(x="Number of new visits", y="Utility", col="Search strategy") +
     theme_bw() +
-    theme(plot.margin = unit(c(0, 1, 0, 0), "in"))
+    theme(
+        plot.margin=unit(c(t=0.3, r=1, b=0, l=0), "in"), 
+        axis.title=element_text(size=rel(1.1)),
+        axis.text=element_text(size=rel(1.1))
+    )
 
-ggsave("figs/utility-results.pdf", width=5.3, height=3.8)
+ggsave("figs/util-results1.pdf", width=4.8, height=4)
+
+hline_col <- c("#3c4276", "#3798a9", "#7fd7b8", "#98d180")
+
+plot_oneoffs <- function(i) {
+    gg2 <- gg +
+        geom_hline(yintercept=u_one_offs$utility[1:i], col=hline_col[1:i], alpha=0.65, linewidth=1, linetype="dashed") +
+        annotate(
+            "text", 
+            label=u_one_offs$strat[1:i], 
+            y=u_one_offs$utility[1:i] + c(-0.2, -0.63, 0.63, 0)[1:i], 
+            col=hline_col[1:i], x=5.5, hjust="left", size=3
+        )
+    
+    ggsave(paste0("figs/util-results2", letters[i], ".pdf"), width=4.8, height=4)
+    gg2
+}
+
+gg2 <- plot_oneoffs(4)
+
+plot_searches <- function(vars) {
+    u_sub <- filter(u_res, strat != "Random", strat %in% vars)
+    
+    gg2 +
+        geom_line(aes(col=fct_relevel(strat, "Simple Var"), group=strat), u_sub) +
+        geom_point(aes(col=fct_relevel(strat, "Simple Var")), u_sub, size=0.9) +
+        scale_color_manual(values=c("#f5b43d", "#f53db5", "#c63df5")[seq_along(vars)]) +
+        theme(legend.position="top", plot.margin=unit(c(t=0, r=1, b=0, l=0), "in"))
+    
+    ggsave(paste0("figs/util-results3", letters[length(vars)], ".pdf"), width=4.9, height=4.2)
+}
+
+plot_searches(c("Simple Var", "Local", "Simulated Annealing"))
+
+###
+
+all_loc_sp <- append_pred_grid(parks_data) |> 
+    distinct(site, geometry)
+
+plot_design_map <- function(d, col) {
+    d_sp <- inner_join(all_loc_sp, d) |> 
+        mutate(month=fct_drop(lubridate::month(date, label=TRUE, abbr=FALSE), c("January", "February")))
+    
+    ggplot(d_sp) +
+        geom_sf(data=sc_state, fill=NA, col="gray70", linewidth=0.7, alpha=0.9) +
+        geom_sf(col=col, alpha=0.8, size=1.2) +
+        facet_wrap(~month, drop=FALSE, nrow=3) +
+        map_theme
+}
+
+sc_state <- st_read("geo-files/south-carolina-county-boundaries.shp") |> 
+    st_transform(st_crs(all_loc_sp)) |> 
+    st_union() |> 
+    nngeo::st_remove_holes()
+
+map_theme <- theme_bw() +
+    theme(
+        axis.text=element_blank(), axis.ticks=element_blank(),
+        panel.spacing=unit(0.55, "mm"),
+        plot.margin=unit(c(0, 0.4, 0, 0), "mm"),
+        panel.grid=element_blank(),
+        strip.text=element_text(size=rel(1.15))
+    )
+
+plot_design_map(u_one_offs$design[[3]], hline_col[3])
+ggsave("figs/util-map2c.pdf", width=3.8, height=3.2)
+
+search_cols <- c("#f5b43d", "#f53db5", "#c63df5")
+plot_design_map(filter(u_res, num_loc == 20, strat == "Simulated Annealing")$design[[1]], search_cols[3])
+ggsave("figs/util-map3c.pdf", width=3.8, height=3.2)

@@ -1,6 +1,7 @@
 library(INLA)
 library(tidyverse)
 library(sf)
+library(furrr)
 
 # Prepare a list of variables (just coefficients [inc. intercept] and not residuals right now) 
 # for the "selection" option for INLA. Used to compute covariance matrix
@@ -59,27 +60,28 @@ utility <- function(d, known_df, n=1, full_df=NULL, by=c("date", "site"), u_only
     pred_risk_mat <- rpost_predict(new_df, pred_idxs, n=n)
     
     # for each row in pred mat, get a sample from p(y_pred|y) and calc utility
-    u_rep <- map_dbl(1:ncol(pred_risk_mat), ~{
+    u_rep <- future_map_dbl(1:ncol(pred_risk_mat), ~{
         new_df$pres[pred_idxs] <- rbinom(nrow(d_df), rep(1, nrow(d_df)), pred_risk_mat[,.x])
         tryCatch(
             util_rep(new_df, sel),
-            # if (.x == 1) util_rep(new_df, sel) else stop("Test"),
-            error=function(e) {
-                print(e)
-                print("Design:")
-                print(as.data.frame(d))
-                print("Sample:")
-                print(new_df$pres[pred_idxs])
-                stop()
-            }
-        )
-    })
+            error=function(e) {on_inla_error(e, d, new_df$pres[pred_idxs])}
+        )}, .options=furrr_options(seed=TRUE)
+    )
     # if (u_only)
     #     return(map_dbl(list_transpose(u_rep), mean, na.rm=TRUE))
     # return(tibble_row(!!!map_dbl(list_transpose(u_rep), mean, na.rm=TRUE), design=list(d)))
     if (u_only)
         return(mean(u_rep, na.rm=TRUE))
     return(tibble_row(dopt=mean(u_rep, na.rm=TRUE), design=list(d)))
+}
+
+on_inla_error <- function(e, design, sample) {
+    print(e)
+    print("Design:")
+    print(as.data.frame(design))
+    print("Sample:")
+    print(sample)
+    stop()
 }
 
 # if file exists, it will be appended
