@@ -1,8 +1,8 @@
 library(INLA)
 library(tidyverse)
 library(sf)
-library(pROC)
-library(gridExtra)
+# library(pROC)
+# library(gridExtra)
 
 source("other-helpers.R")
 
@@ -36,14 +36,14 @@ get_formula <- function(terms, response="pres") {
 # data to be used in all following analyses.
 # covariates are rescaled since no grid locations added in this script
 # only land_cover levels appearing in parks are used
-parks_data <- read_parks_sf(drop=min_temp) |> 
+parks_obs <- read_parks_sf(drop=min_temp) |> 
     prep_parks_model_data(rescale=TRUE)
 
 # Model performance for binary response-------------------------------------------
 
 fx_terms <- rep(1, 7)
 
-names(fx_terms) <- parks_data |> 
+names(fx_terms) <- parks_obs |> 
     st_drop_geometry() |> 
     select(land_cover:mean_rh) |> 
     colnames()
@@ -56,12 +56,12 @@ prec_pri_str <- "list(prec=list(prior='loggamma', param=c(1, 0.1)))" # this one 
 
 fx_models <- list(
     slope=get_formula(fx_terms),
-    `slope:species`=get_formula(fx_terms + 1),
-    spline=get_formula(c(land_cover=2, fx_terms + 2)), # TODO: problem was here
-    `spline:species`=get_formula(c(land_cover=2, fx_terms + 3))
     # `slope:species`=get_formula(fx_terms + 1),
-    # spline=get_formula(c(land_cover=2, fx_terms[-1] + 2)),
-    # `spline:species`=get_formula(c(land_cover=2, fx_terms[-1] + 3))
+    # spline=get_formula(c(land_cover=2, fx_terms + 2)),
+    # `spline:species`=get_formula(c(land_cover=2, fx_terms + 3))
+    `slope:species`=get_formula(fx_terms + 1),
+    spline=get_formula(c(land_cover=2, fx_terms[-1] + 2)),
+    `spline:species`=get_formula(c(land_cover=2, fx_terms[-1] + 3))
 )
 
 rx_models <- list(
@@ -95,23 +95,23 @@ mod_comp1 <- expand_grid(fx=fct_inorder(names(fx_models)), rx=fct_inorder(names(
         form=map2(fx, rx, ~update(fx_models[[.x]], rx_models[[.y]])),
         ft=map(form, ~{
             print(.x)
-            fit_model(.x, parks_data, fx_prec=0.2, control_compute=list(mlik=TRUE, dic=TRUE))
+            fit_model(.x, parks_obs, fx_prec=0.2, control_compute=list(mlik=TRUE, dic=TRUE))
         }),
         mlik=map_dbl(ft, ~.x$mlik[1, 1]), dic=map_dbl(ft, ~.x$dic$dic)
     )
 
-mod_comp2 <- expand_grid(fx=fct_inorder(names(fx_models)[1:2]), rx=fct_inorder(names(rx_models))) |> 
+mod_comp2 <- expand_grid(fx=fct_inorder(names(fx_models)), rx=fct_inorder(names(rx_models))) |> 
     mutate(
         form=map2(fx, rx, ~update(
             update(fx_models[[.x]], ~. + f(
-                id, model="iid3d", n=nrow(parks_data), 
+                id, model="iid3d", n=nrow(parks_obs), 
                 hyper=list(prec1=list(param=c(4, rep(1, 3), rep(0, 3))))
             )),
             rx_models[[.y]]
         )),
         ft=map(form, ~{
             print(.x)
-            fit_model(.x, parks_data, fx_prec=0.2, control_compute=list(mlik=TRUE, dic=TRUE))
+            fit_model(.x, parks_obs, fx_prec=0.2, control_compute=list(mlik=TRUE, dic=TRUE))
         }),
         mlik=map_dbl(ft, ~.x$mlik[1, 1]), dic=map_dbl(ft, ~.x$dic$dic)
     )
@@ -122,30 +122,30 @@ mod_comp_res <- bind_rows(
     mutate(cpu=map_dbl(ft, ~.x$cpu.used[4]))
 
 ggplot(mod_comp_res, aes(fx, rx)) +
-    geom_tile(aes(fill=mlik), col="white") +
-    # geom_tile(fill=NA, col="orange", data=slice_max(mod_comp_res, mlik, n=1), size=1.3) +
-    geom_text(aes(label=round(mlik, 1)), col="gray80", size=4.9) +
+    geom_tile(aes(fill=dic), col="white") +
+    geom_tile(fill=NA, col="orange", data=slice_min(mod_comp_res, dic, n=1), linewidth=1.3) +
+    geom_text(aes(label=round(dic, 1)), col="gray80", size=4.9) +
     facet_grid(.~jsdm, scales="free_x", space="free", labeller=labeller(jsdm=label_wrap_gen(15))) +
-    scale_fill_viridis_c(option="viridis", values=scales::rescale(sort(mod_comp_res$mlik))^2) +
-    # scale_fill_viridis_c(option="mako") +
-    labs(x="Fixed effects", y="Random effects", fill="Marginal Likelihood") +
+    # scale_fill_viridis_c(option="viridis", values=scales::rescale(sort(mod_comp_res$dic))^2) +
+    scale_fill_viridis_c(option="mako") +
+    labs(x="Environmental effects", y="Spatiotemporal effects", fill="DIC") +
     theme_bw() +
     scale_x_discrete(expand=expansion()) +
     scale_y_discrete(expand=expansion()) +
     theme(
-        panel.spacing=unit(0,"lines"), 
+        panel.spacing=unit(0,"lines")
         # for presentations:
-        strip.text=element_text(size=rel(1.15)),
-        axis.text=element_text(size=rel(1.03)),
-        axis.title=element_text(size=rel(1.15))
+        # strip.text=element_text(size=rel(1.15)),
+        # axis.text=element_text(size=rel(1.03)),
+        # axis.title=element_text(size=rel(1.15))
     )
 
-ggsave("bdhsc-conf-pres/model-comp-mlik.pdf", width=7.4, height=5.2)
+ggsave("figs/model-comp-dic.pdf", width=7.4, height=5.2)
 
 # Best model performance----------------------------------------------------------
 
 best_model <- slice_min(mod_comp_res, dic, n=1)$form[[1]]
-best_fit <- fit_model(best_model, parks_data, 0.2)
+best_fit <- fit_model(best_model, parks_obs, 0.2)
 
 ## Marginal posteriors for fixed effect coefficients
 best_fit$marginals.fixed |> 

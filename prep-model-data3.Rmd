@@ -187,8 +187,8 @@ park_counts |>
 A separate database is saved just for the observed points (we will use these data separately for the model comparison study, and to add to during the design part).
 
 ```{r}
-st_write(all_parks, "data-proc/parks-design-space.shp", delete_dsn=TRUE)
-st_write(park_counts, "data-proc/parks-observed.shp", delete_dsn=TRUE)
+st_write(all_parks, "data-proc/parks-design-space.shp", append=FALSE)
+st_write(park_counts, "data-proc/parks-observed.shp", append=FALSE)
 ```
 
 <!-- ## Create a spatial grid using the NLCD 2019 data -->

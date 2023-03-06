@@ -3,7 +3,7 @@ library(tidyverse)
 # Initial data preparation--------------------------------------------------------
 # in all analyses, A. maculatum, all larvae, and the min_temp---------------------
 # covariate are removed-----------------------------------------------------------
-read_parks_sf <- function(f="geo-files/parks-with-covars.shp", drop=NULL) {
+read_parks_sf <- function(f="data-proc/parks-observed.shp", drop=NULL) {
     read_sf(f) |> 
         rename(
             life_stage=lif_stg, land_cover=lnd_cvr, tree_canopy=tr_cnpy, elevation=elevatn, 
@@ -11,6 +11,7 @@ read_parks_sf <- function(f="geo-files/parks-with-covars.shp", drop=NULL) {
         ) |> 
         # Larvae must absolute be filtered since they were always assigned A. americanum!!!
         filter(species != "maculatum", life_stage != "larva") |> 
+        relocate(land_cover, tree_canopy, elevation, min_temp, max_temp, precipitation, jan_min_temp, mean_rh, .after=life_stage) |> 
         select(-{{drop}})
 }
 
