@@ -1,11 +1,19 @@
 *.bib
 *.docx
 *.html
+*~lock*
 
 data-proc/
 data-raw/
+joint-lab-pres/
+figs/
+util-results/
+util-results-old/
+geo-files/
+bdhsc-conf-pres/
 
 .Rproj.user
 .Rhistory
-.RData
+*.RData*
 .Ruserdata
+*.Rproj

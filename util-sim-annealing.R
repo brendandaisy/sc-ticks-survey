@@ -8,7 +8,7 @@ source("other-helpers.R")
 source("utility-helpers.R")
 dir.create("util-results", showWarnings=FALSE)
 
-set.seed(203)
+set.seed(222)
 inla.setOption(inla.mode="classic", num.threads="16:1")
 plan(future::multicore(workers=8))
 
@@ -34,7 +34,7 @@ init_d_cand <- function(pred_df) {
 #' @return a `list` contain the best design, its approx utility, and the iteration it was found in
 simulated_annealing <- function(
         pred_df, known_df, num_loc=1, iter=1, alpha=1, T0=1, n_est=1, 
-        d_so_far=tibble(), d_init=NULL, weight_by=var_eta
+        d_so_far=tibble(), d_init=NULL, weight_by=var_eta, info_iter=10
 ) {
     # assign each date, site a weight based on avg variance of each species
     # this is the set new designs points will be chosen from:
@@ -44,7 +44,7 @@ simulated_annealing <- function(
         d_curr <- d_best <- slice_sample(d_cand, n=num_loc, weight_by={{weight_by}})
     else
         d_curr <- d_best <- d_init
-    u_curr <- u_best <- utility(bind_rows(d_curr, d_so_far), known_df, n=n_est, full_df=pred_df, u_only=TRUE)
+    u_curr <- u_best <- utility(bind_rows(d_curr, d_so_far), known_df, n=n_est, pred_df=pred_df, u_only=TRUE)
     i_best <- 0
     
     T_sched <- T0*seq(1, 0, length.out=iter)^alpha
@@ -56,7 +56,7 @@ simulated_annealing <- function(
         d_prop <- slice_sample(d_curr, n=max(nrow(d_curr)-1, 1)) |>
             bind_rows(next_pt)
         
-        u_prop <- utility(bind_rows(d_prop, d_so_far), known_df, n=n_est, full_df=pred_df, u_only=TRUE)
+        u_prop <- utility(bind_rows(d_prop, d_so_far), known_df, n=n_est, pred_df=pred_df, u_only=TRUE)
         if (u_prop > u_best) { # if better than global best, update that info
             i_best <- i
             d_curr <- d_best <- d_prop
@@ -68,39 +68,40 @@ simulated_annealing <- function(
             d_curr <- d_prop
             u_curr <- u_prop
         }
-        if (i %% 10 == 0) # print update after 10 iter
+        if (i %% info_iter == 0) # print update after iter
             print(paste0("Current U=", round(u_curr, 3), " at i=", i, "/", iter))
     }
     return(list(d=bind_rows(d_best, d_so_far), u_approx=u_best, at=i_best))
 }
 
 # Data preparation----------------------------------------------------------------
-parks_data <- read_parks_sf("geo-files/parks-with-covars.shp", drop=min_temp) |>
-    prep_parks_model_data(rescale=FALSE) # don't rescale, since scaled wrt. grid data below
+parks_obs <- read_parks_sf(drop=min_temp) |> 
+    prep_parks_model_data(rescale=FALSE)
 
 fit_all <- readRDS("inla-fit-all-data.rds")
 
-all_data <- append_pred_grid(parks_data) |>
+all_data <- append_pred_data(parks_obs) |>
     st_drop_geometry() |> 
+    # add additional info for selecting candidate locations during search
     mutate(
         mean_pres=fit_all$summary.fitted.values$mean,
         sd_pres=fit_all$summary.fitted.values$sd,
         var_eta=fit_all$summary.linear.predictor$sd^2
     )
 
-grid_mod <- filter(all_data, is.na(pres)) # final not yet observed data for fitting models
-parks_mod <- filter(all_data, !is.na(pres)) # final observed data for fitting models
+pred_mod <- filter(all_data, is.na(pres)) # final not yet observed data for fitting models
+obs_mod <- filter(all_data, !is.na(pres)) # final observed data for fitting models
 
 n_est <- 30
 n <- 50
 
 d_so_far <- tibble()
 for (i in 1:4) {
-    sa_res <- simulated_annealing(grid_mod, parks_mod, 5, iter=100, alpha=1.5, T0=0.1, n_est=n_est, d_so_far=d_so_far)
+    sa_res <- simulated_annealing(pred_mod, obs_mod, 5, iter=10, alpha=0.9, T0=1, n_est=n_est, d_so_far=d_so_far, info_iter=2)
     d_so_far <- sa_res$d
-    u_res <- utility(sa_res$d, parks_mod, n=n, full_df=grid_mod)
+    u_res <- utility(sa_res$d, obs_mod, n=n, pred_df=pred_mod)
     res <- tibble_row(!!!u_res, num_loc=nrow(d_so_far))
-    saveRDS(res, paste0("util-results/util-sim-ann-alpha1pt5-T0pt1", i, ".rds"))
+    saveRDS(res, paste0("util-results/util-sim-ann-alphapt9-T01-", i, ".rds"))
 }
 
 # res <- map_dfr(1:4, ~{

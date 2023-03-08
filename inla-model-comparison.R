@@ -1,6 +1,7 @@
 library(INLA)
 library(tidyverse)
 library(sf)
+library(cowplot)
 # library(pROC)
 # library(gridExtra)
 
@@ -90,57 +91,39 @@ rx_models <- list(
 # cause it seemed like the model was almost singular due to large cov_mat in those directions,
 # but the models were a bit worse (even by ML)
 
-mod_comp1 <- expand_grid(fx=fct_inorder(names(fx_models)), rx=fct_inorder(names(rx_models))) |> 
+mod_comp_res <- expand_grid(fx=fct_inorder(names(fx_models)), rx=fct_inorder(names(rx_models))) |> 
     mutate(
         form=map2(fx, rx, ~update(fx_models[[.x]], rx_models[[.y]])),
         ft=map(form, ~{
             print(.x)
             fit_model(.x, parks_obs, fx_prec=0.2, control_compute=list(mlik=TRUE, dic=TRUE))
         }),
-        mlik=map_dbl(ft, ~.x$mlik[1, 1]), dic=map_dbl(ft, ~.x$dic$dic)
+        mlik=map_dbl(ft, ~.x$mlik[1, 1]), 
+        dic=map_dbl(ft, ~.x$dic$dic),
+        cpu=map_dbl(ft, ~.x$cpu.used[4])
     )
-
-mod_comp2 <- expand_grid(fx=fct_inorder(names(fx_models)), rx=fct_inorder(names(rx_models))) |> 
-    mutate(
-        form=map2(fx, rx, ~update(
-            update(fx_models[[.x]], ~. + f(
-                id, model="iid3d", n=nrow(parks_obs), 
-                hyper=list(prec1=list(param=c(4, rep(1, 3), rep(0, 3))))
-            )),
-            rx_models[[.y]]
-        )),
-        ft=map(form, ~{
-            print(.x)
-            fit_model(.x, parks_obs, fx_prec=0.2, control_compute=list(mlik=TRUE, dic=TRUE))
-        }),
-        mlik=map_dbl(ft, ~.x$mlik[1, 1]), dic=map_dbl(ft, ~.x$dic$dic)
-    )
-
-mod_comp_res <- bind_rows(
-    mutate(mod_comp1, jsdm="independent residuals"), mutate(mod_comp2, jsdm="joint species residuals")
-) |> 
-    mutate(cpu=map_dbl(ft, ~.x$cpu.used[4]))
 
 ggplot(mod_comp_res, aes(fx, rx)) +
     geom_tile(aes(fill=dic), col="white") +
-    geom_tile(fill=NA, col="orange", data=slice_min(mod_comp_res, dic, n=1), linewidth=1.3) +
     geom_text(aes(label=round(dic, 1)), col="gray80", size=4.9) +
-    facet_grid(.~jsdm, scales="free_x", space="free", labeller=labeller(jsdm=label_wrap_gen(15))) +
+    geom_tile(fill=NA, col="orange", data=slice_min(mod_comp_res, dic, n=1), linewidth=1) +
+    # facet_grid(.~jsdm, scales="free_x", space="free", labeller=labeller(jsdm=label_wrap_gen(15))) +
     # scale_fill_viridis_c(option="viridis", values=scales::rescale(sort(mod_comp_res$dic))^2) +
     scale_fill_viridis_c(option="mako") +
     labs(x="Environmental effects", y="Spatiotemporal effects", fill="DIC") +
     theme_bw() +
-    scale_x_discrete(expand=expansion()) +
-    scale_y_discrete(expand=expansion()) +
+    scale_x_discrete(expand=expansion(add=c(0.55, 0))) +
+    scale_y_discrete(expand=expansion(add=c(0.55, 0.51))) +
     theme(
-        panel.spacing=unit(0,"lines")
+        panel.border=element_blank(),
+        axis.ticks=element_line(color="gray90")
         # for presentations:
         # strip.text=element_text(size=rel(1.15)),
         # axis.text=element_text(size=rel(1.03)),
         # axis.title=element_text(size=rel(1.15))
     )
 
-ggsave("figs/model-comp-dic.pdf", width=7.4, height=5.2)
+ggsave("figs/model-comp-dic.pdf", width=5.2, height=5)
 
 # Best model performance----------------------------------------------------------
 
@@ -148,25 +131,61 @@ best_model <- slice_min(mod_comp_res, dic, n=1)$form[[1]]
 best_fit <- fit_model(best_model, parks_obs, 0.2)
 
 ## Marginal posteriors for fixed effect coefficients
-best_fit$marginals.fixed |> 
+p1 <- best_fit$marginals.fixed |> 
     summ_fx() |> 
-    mutate(species=str_extract(var, "Amblyomma americanum|Dermacentor variabilis|Ixodes spp\\."), var=fx_labels(var)) |> 
+    # mutate(species=str_extract(var, "Amblyomma americanum|Dermacentor variabilis|Ixodes spp\\."), var=fx_labels(var)) |> 
+    mutate(var=fx_labels(var)) |> 
     ggplot(aes(m, var)) +
-    geom_vline(xintercept = 0, col = 'gray55', linetype = 'dashed') +
-    geom_linerange(aes(xmin = lo95, xmax = hi95), size = 1, col="#3888a6") +
-    geom_linerange(aes(xmin = lo5, xmax = hi5), size = 2, col="#3888a6") +
-    geom_point(size = 1.5, col="#dd4a2c") +
-    facet_wrap(~species, nrow=3) +
-    labs(x = 'Log odds', y = NULL) +
+    geom_vline(xintercept = 0, col = 'gray70', linetype = 'dashed') +
+    geom_linerange(aes(xmin = lo95, xmax = hi95), size = 1, col="#3a2b52") +
+    geom_linerange(aes(xmin = lo5, xmax = hi5), size = 2, col="#3a2b52") +
+    geom_point(size=1.5, col="#9de0c5") +
+    labs(x = "Log odds", y="Environmental variable") +
     theme_bw() +
     theme(
         # for presentations:
-        strip.text=element_text(size=rel(1.15)),
-        axis.text=element_text(size=rel(1.03)),
-        axis.title=element_text(size=rel(1.15))
+        # strip.text=element_text(size=rel(1.15)),
+        # axis.text=element_text(size=rel(1.03)),
+        # axis.title=element_text(size=rel(1.15))
     )
 
-ggsave("bdhsc-conf-pres/pres-fixed-effects.pdf", width=5.5, height=7.3)
+# Temporal posterior trends
+temp_post_samp <- tibble(
+    marg=best_fit$marginals.random$month,
+    month=rep(month(3:12, label=TRUE, abbr=TRUE), 3),
+    group=rep(c("Amblyomma americanum", "Dermacentor variabilis", "Ixodes spp."), each=10)
+) |> 
+    mutate(rmarg=map(marg, ~inla.rmarginal(1000, .x)))
+
+temp_post_samp <- temp_post_samp |> 
+    mutate(mean=map_dbl(rmarg, mean))
+    
+p2 <- ggplot(unnest(temp_post_samp, rmarg), aes(rmarg, month, fill=group)) +
+    geom_density_ridges(scale=1, alpha=0.35, col=NA) +
+    geom_line(aes(x=mean, group=group, col=group), data=temp_post_samp, orientation="y", linetype="dotdash", linewidth=1) +
+    geom_point(aes(x=mean, col=group), data=temp_post_samp, size=1.1) +
+    theme_bw() +
+    xlim(-5, 5) +
+    coord_flip() +
+    labs(y="Month", x="Temporal effect") +
+    scale_fill_manual(values=c("#3888a6", "#3a2b52", "#9de0c5")) +
+    scale_color_manual(values=c("#3888a6", "#3a2b52", "#9de0c5")) +
+    theme(legend.position="bottom", legend.direction="vertical", legend.title=element_blank())
+
+plot_grid(p1, p2, nrow=1, rel_heights=c(1, 0.86), rel_widths=c(1.1, 1), labels=c("A", "B"))
+
+ggsave("figs/model-effects.pdf", width=7.5, height=4.7)
+
+as_tibble(best_fit$summary.random$month) |>
+    mutate(group=rep(c("Amblyomma americanum", "Dermacentor variabilis", "Ixodes spp."), each=10)) |>
+    ggplot(aes(month(ID, label=TRUE, abbr=FALSE), col=group)) +
+    geom_line(aes(y=`0.5quant`, group=group)) +
+    geom_linerange(aes(ymin=`0.025quant`, ymax=`0.975quant`)) +
+    geom_point(aes(y=`0.5quant`)) +
+    facet_wrap(~group, nrow=3) +
+    labs(x="Month", y="Temporal effect")
+
+ggsave("figs/pres-fixed-effects.pdf", width=5.5, height=7.3)
 
 ###
 

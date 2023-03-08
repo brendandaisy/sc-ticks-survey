@@ -15,7 +15,7 @@ read_parks_sf <- function(f="data-proc/parks-observed.shp", drop=NULL) {
         select(-{{drop}})
 }
 
-prep_parks_model_data <- function(parks_sf, rescale=TRUE, joint_compat=TRUE) {
+prep_parks_model_data <- function(parks_sf, rescale=TRUE) {
     # rescale covariates and format a few things
     parks_rescale <- parks_sf |> 
         mutate(
@@ -28,52 +28,37 @@ prep_parks_model_data <- function(parks_sf, rescale=TRUE, joint_compat=TRUE) {
         group_by(across(c(date, month, site, tick_class, land_cover:mean_rh))) |>
         summarize(pres=ifelse(sum(count) > 0, 1L, 0L), abun=sum(count), .groups="drop")
     
-    if (joint_compat) {
-        ret <- mutate(ret, tcnum=case_when(
-            tick_class == "Amblyomma americanum" ~ 1L, 
-            tick_class == "Dermacentor variabilis" ~ 2L, 
-            TRUE ~ 3L
-        )) |> 
-            arrange(tcnum) |> 
-            mutate(id=1:n())
-    }
-    return(ret)
+    mutate(ret, tcnum=case_when(
+        tick_class == "Amblyomma americanum" ~ 1L, 
+        tick_class == "Dermacentor variabilis" ~ 2L, 
+        TRUE ~ 3L
+    )) |> 
+        arrange(tcnum)
 }
 
-append_pred_grid <- function(parks_df, f="geo-files/covar-grid.shp") {
-    covar_grid <- st_read(f) |> 
+append_pred_data <- function(obs_df, f="data-proc/parks-design-space.shp") {
+    pred_df <- st_read(f) |> 
         rename(
             land_cover=lnd_cvr, tree_canopy=tr_cnpy, elevation=elevatn, min_temp=min_tmp, max_temp=max_tmp,
             precipitation=prcpttn, jan_min_temp=jn_mn_t
         ) |> 
         mutate(land_cover=land_cover_labels(land_cover)) |> 
+        relocate(land_cover, tree_canopy, elevation, min_temp, max_temp, precipitation, jan_min_temp, mean_rh, .after=date) |> 
         select(-min_temp)
     
     # Add a unique site label to each grid location (i.e. const. over time)
-    covar_grid <- covar_grid |> 
-        group_by(geo=as.character(geometry)) |> 
-        mutate(site=str_c("g", cur_group_id())) |> 
-        ungroup() |> 
-        select(-geo) |> 
-        mutate(data=list(tibble(tick_class=unique(parks_df$tick_class), pres=NA, tcnum=1:3))) |> 
+    pred_df <- pred_df |> 
+        mutate(data=list(tibble(tick_class=unique(obs_df$tick_class), pres=NA, tcnum=1:3))) |> 
         unnest(c(data))
     
-    # Add levels missing from parks data but present in SC
-    levels(parks_df$land_cover) <- levels(covar_grid$land_cover)
-    
-    # Predict expected risk across grid, for sampling---------------------------------
-    
     # WARNING: all_data has now been scaled, and is the reference covar values for all subdesigns
-    return(prep_new_data(parks_df, covar_grid, scale=TRUE))
+    return(prep_new_data(obs_df, pred_df, scale=TRUE))
 }
 
 # This should be a function, since 1) the covariate scaling is very much dependent on the chosen locations now, and 
 # 2) the joint residuals require the data to be arranged each time
 prep_new_data <- function(known_df, new_df=NULL, scale=FALSE) {
-    ret <- known_df |>
-        bind_rows(new_df) |>
-        arrange(tcnum) |>
-        mutate(id=1:n())
+    ret <- bind_rows(known_df, new_df)
     
     if (scale)
         ret <- mutate(ret, across(tree_canopy:mean_rh, ~(.x - mean(.x)) / sd(.x)))
@@ -116,37 +101,17 @@ formula_jsdm <- function(df, rx=~.) {
 
 # the (current...) preferred model for performing BED
 formula_bed <- function(...) {
-    pres ~ -1 + tick_class +  
-        tick_class:land_cover + tick_class:tree_canopy + tick_class:elevation +
-        tick_class:jan_min_temp + tick_class:max_temp + tick_class:precipitation + tick_class:mean_rh
+    prec_pri <- list(prec=list(prior="loggamma", param=c(1, 0.1)))
+
+    pres ~ -1 + tick_class + land_cover + tree_canopy + elevation + max_temp + 
+        precipitation + jan_min_temp + mean_rh + 
+        f(month, model = "ar1", hyper = prec_pri, group = tcnum, control.group = list(model = "iid", hyper = prec_pri)) + 
+        f(site, model = "iid", hyper = prec_pri, group = tcnum, control.group = list(model = "iid", hyper = prec_pri))
 }
 
-get_fixed_effects <- function(..., new_loc) {
-    amb <- get("tick_classAmblyomma americanum") +
-        get(paste0("tick_classAmblyomma americanum:land_cover", new_loc$land_cover)) +
-        get("tick_classAmblyomma americanum:tree_canopy")*new_loc$tree_canopy +
-        get("tick_classAmblyomma americanum:jan_min_temp")*new_loc$jan_min_temp +
-        get("tick_classAmblyomma americanum:max_temp")*new_loc$max_temp +
-        get("tick_classAmblyomma americanum:precipitation")*new_loc$precipitation +
-        get("tick_classAmblyomma americanum:mean_rh")*new_loc$mean_rh
-    
-    der <- get("tick_classDermacentor variabilis") +
-        get(paste0("tick_classDermacentor variabilis:land_cover", new_loc$land_cover)) +
-        get("tick_classDermacentor variabilis:tree_canopy")*new_loc$tree_canopy +
-        get("tick_classDermacentor variabilis:jan_min_temp")*new_loc$jan_min_temp +
-        get("tick_classDermacentor variabilis:max_temp")*new_loc$max_temp +
-        get("tick_classDermacentor variabilis:precipitation")*new_loc$precipitation +
-        get("tick_classDermacentor variabilis:mean_rh")*new_loc$mean_rh
-    
-    ix <- get("tick_classIxodes spp.") +
-        get(paste0("tick_classIxodes spp.:land_cover", new_loc$land_cover)) +
-        get("tick_classIxodes spp.:tree_canopy")*new_loc$tree_canopy +
-        get("tick_classIxodes spp.:jan_min_temp")*new_loc$jan_min_temp +
-        get("tick_classIxodes spp.:max_temp")*new_loc$max_temp +
-        get("tick_classIxodes spp.:precipitation")*new_loc$precipitation +
-        get("tick_classIxodes spp.:mean_rh")*new_loc$mean_rh
-    
-    return(c(amb, der, ix))
+fit_all_data <- function(all_data) {
+    f <- formula_bed()
+    fit_model(f, all_data, fx_prec=0.2, control_compute=list(mlik=TRUE, dic=TRUE))
 }
 
 # Helpers for relabelling and preparing fixed effects for analysis----------------
@@ -166,12 +131,17 @@ summ_fx <- function(fx_marg) {
 
 fx_labels <- function(fx) {
     fx |> 
-        str_remove("tick_class") |> 
-        str_remove("(Amblyomma americanum|Dermacentor variabilis|Ixodes spp\\.):") |> 
-        str_replace("Amblyomma americanum|Dermacentor variabilis|Ixodes spp\\.", "intercept") |> 
-        str_remove("land_cover") |> 
-        fct_relevel("intercept", after=Inf) |> 
-        fct_relevel("tree_canopy", "elevation", "jan_min_temp", "max_temp", "precipitation", "mean_rh", after=0)
+        str_remove("tick_class|land_cover") |> 
+        fct_relevel("Dermacentor variabilis", "Ixodes spp.", "Amblyomma americanum", after=Inf) |> 
+        fct_relevel("tree_canopy", "elevation", "jan_min_temp", "max_temp", "precipitation", "mean_rh", after=0) |> 
+        fct_recode(
+            "Tree canopy"="tree_canopy", 
+            "Elevation"="elevation", 
+            "Jan. min. temperature"="jan_min_temp", 
+            "Max temperature"="max_temp", 
+            "Precipitation"="precipitation", 
+            "Relative humidity"="mean_rh"
+        )
 }
 
 land_cover_labels <- function(lc) {

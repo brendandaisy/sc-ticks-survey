@@ -206,37 +206,26 @@ distinct(tmp, across(land_cover:mean_rh))
 # "One-off" design strategies-----------------------------------------------------
 
 ## 1. Utility with no additional sampling
-u_none <- util_rep(prep_new_data(parks_mod, scale=FALSE), sel_list_inla(parks_mod))
+u_none <- util_rep(obs_mod, sel_list_inla(obs_mod))
 
 ## 2-3. Visit all 30 parks again in December/June
-all_data_sp <- append_pred_grid(parks_data)
 
-d_parks_dec <- parks_data |> 
-    distinct(site, geometry) |> 
-    st_join(filter(all_data_sp, month == 12), st_nearest_feature) |> 
-    st_drop_geometry() |> 
-    rename(site=site.x) |> 
-    select(-site.y)
+d_parks_dec <- obs_mod |> 
+    distinct(site) |> 
+    mutate(date=as.Date("2023-12-01"))
+    
+u_parks_dec <- utility(d_parks_dec, obs_mod, n=n, pred_df=pred_mod)
 
-d_parks_dec$pres <- NA
-u_parks_dec <- utility(d_parks_dec, parks_mod, n=n)
+d_parks_jun <- obs_mod |> 
+    distinct(site) |> 
+    mutate(date=as.Date("2023-06-01"))
 
-d_parks_jun <- parks_data |> 
-    distinct(site, geometry) |> 
-    st_join(filter(all_data_sp, month == 6), st_nearest_feature) |> 
-    st_drop_geometry() |> 
-    rename(site=site.x) |> 
-    select(-site.y)
-
-d_parks_jun$pres <- NA
-u_parks_jun <- utility(d_parks_jun, parks_mod, n=n)
-
-rm(all_data_sp) # remove this for space since no longer needed
+u_parks_jun <- utility(d_parks_jun, obs_mod, n=n, pred_df=pred_mod)
 
 ## 4. Reuse the same schedule from 2021
-d_resamp <- filter(parks_mod, lubridate::year(date) == 2021)
+d_resamp <- filter(obs_mod, lubridate::year(date) == 2021)
 d_resamp$pres <- NA
-u_resamp <- utility(d_resamp, parks_mod, n=n)
+u_resamp <- utility(d_resamp, obs_mod, n=n)
 
 u_one_offs <- tibble(
     strat=c("    None (0)", "    Revisit in\n    June (30)", "    Revisit in\n    December (30)", "    Repeat 2021\n    schedule (111)"), 
@@ -375,17 +364,17 @@ u_rand_mean <- u_res_random |>
     group_by(num_loc) |> 
     summarise(mean=mean(dopt))
     
-gg <- ggplot(u_res_random, aes(factor(num_loc), dopt)) +
+gg <- ggplot(res, aes(factor(num_loc), dopt)) +
     geom_violin(fill="#9ac9e7", col="gray70", alpha=0.75)  +
     geom_point(col="#9ac9e7", size=0.9) +
     coord_cartesian(clip="off") +
-    ylim(NA, 30) +
+    # ylim(NA, 30) +
     labs(x="Number of new visits", y="Utility", col="Search strategy") +
     theme_bw() +
     theme(
         plot.margin=unit(c(t=0.3, r=1, b=0, l=0), "in"), 
-        axis.title=element_text(size=rel(1.1)),
-        axis.text=element_text(size=rel(1.1))
+        # axis.title=element_text(size=rel(1.1)),
+        # axis.text=element_text(size=rel(1.1))
     )
 
 ggsave("figs/util-results1.pdf", width=4.8, height=4)

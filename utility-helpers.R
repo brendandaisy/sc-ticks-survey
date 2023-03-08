@@ -10,11 +10,8 @@ sel_list_inla <- function(df) {
         str_c("land_cover", levels(df$land_cover)),
         "tree_canopy", "elevation", "jan_min_temp", "max_temp", "precipitation", "mean_rh"
     )
-    coefs <- flatten_chr(map(
-        vars,
-        ~str_c("tick_class", c("Amblyomma americanum", "Dermacentor variabilis", "Ixodes spp."), ":", .x)
-    ))
-    coefs <- c(str_c("tick_class", c("Amblyomma americanum", "Dermacentor variabilis", "Ixodes spp.")), coefs)
+    # add the tick-specific intercepts
+    coefs <- c(str_c("tick_class", c("Amblyomma americanum", "Dermacentor variabilis", "Ixodes spp.")), vars)
     sel <- rep(1, length(coefs)) |> as.list()
     names(sel) <- coefs
     return(sel)
@@ -30,29 +27,17 @@ rpost_predict <- function(obs_df, pred_idxs, n=1) {
 
 # Bayesian D-optimality criteria
 # assumes new_df has sampled pres, with parks data added
-util_rep <- function(new_df, sel, criteria=c("Dfixed", "Dres", "Eres"), stable=TRUE) {
+util_rep <- function(new_df, sel, stable=TRUE) {
     f <- formula_bed()
     ft <- fit_model(f, new_df, fx_prec=0.2, selection=sel)
-    # ret <- rep(0, length(criteria))
-    # if ("Dfixed" %in% criteria)
-    #     ret[1] <- -log(det(ft$selection$cov.matrix))
-    # if ("Dres" %in% criteria | "Eres" %in% criteria) {
-    #     res_cov <- cov(inla.hyperpar.sample(30000, ft))
-    #     if ("Dres" %in% criteria)
-    #         ret[2] <- -log(det(res_cov))
-    #     if ("Eres" %in% criteria)
-    #         ret[3] <- -eigen(res_cov, only.values=TRUE)[1]
-    # }
-    # names(ret) <- criteria
-    # return(ret)
     -log(det(ft$selection$cov.matrix))
 }
 
 # optional full_df can be used to extract all info if d_df only has site and date
 # this can be useful since there are J rows per visit
 # `...` is passed to `util_rep`
-utility <- function(d, known_df, n=1, full_df=NULL, by=c("date", "site"), u_only=FALSE) {
-    d_df <- if (!is.null(full_df)) inner_join(full_df, d, by=by) else d
+utility <- function(d, known_df, n=1, pred_df=NULL, by=c("date", "site"), u_only=FALSE) {
+    d_df <- if (!is.null(pred_df)) inner_join(pred_df, d, by=by) else d
     # setup new data frame (parks + d_df) and get prediction matrix
     sel <- sel_list_inla(known_df)
     new_df <- prep_new_data(known_df, d_df, scale=FALSE)
@@ -67,9 +52,6 @@ utility <- function(d, known_df, n=1, full_df=NULL, by=c("date", "site"), u_only
             error=function(e) {on_inla_error(e, d, new_df$pres[pred_idxs])}
         )}, .options=furrr_options(seed=TRUE)
     )
-    # if (u_only)
-    #     return(map_dbl(list_transpose(u_rep), mean, na.rm=TRUE))
-    # return(tibble_row(!!!map_dbl(list_transpose(u_rep), mean, na.rm=TRUE), design=list(d)))
     if (u_only)
         return(mean(u_rep, na.rm=TRUE))
     return(tibble_row(dopt=mean(u_rep, na.rm=TRUE), design=list(d)))
