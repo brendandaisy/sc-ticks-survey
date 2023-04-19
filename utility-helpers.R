@@ -27,19 +27,28 @@ rpost_predict <- function(obs_df, pred_idxs, n=1) {
 
 # Bayesian D-optimality criteria
 # assumes new_df has sampled pres, with parks data added
-util_rep <- function(new_df, sel, stable=TRUE) {
+util_dopt <- function(new_df, sel, stable=TRUE, risk_df=NULL) {
     f <- formula_bed()
     ft <- fit_model(f, new_df, fx_prec=0.2, selection=sel)
     -log(det(ft$selection$cov.matrix))
 }
 
+util_risk_sd <- function(new_df, risk_df, sel=NULL) {
+    ndf <- bind_rows(new_df, risk_df)
+    f <- formula_bed()
+    ft <- fit_model(f, ndf, fx_prec=0.2)
+    v <- ft$summary.linear.predictor$sd[-c(1:nrow(new_df))]
+    return(-mean(v))
+}
+
 # optional full_df can be used to extract all info if d_df only has site and date
 # this can be useful since there are J rows per visit
 # `...` is passed to `util_rep`
-utility <- function(d, known_df, n=1, pred_df=NULL, by=c("date", "site"), u_only=FALSE) {
-    d_df <- if (!is.null(pred_df)) inner_join(pred_df, d, by=by) else d
-    # setup new data frame (parks + d_df) and get prediction matrix
-    sel <- sel_list_inla(known_df)
+utility <- function(
+        d, known_df, n=1, pred_df=NULL, util_fun=util_dopt, u_only=FALSE,
+        copy=FALSE, by=c("date", "site"), sel=NULL, risk_df=NULL
+    ) {
+    d_df <- if (!is.null(pred_df)) inner_join(pred_df, d, by=by, copy=copy) else d
     new_df <- prep_new_data(known_df, d_df, scale=FALSE)
     pred_idxs <- which(is.na(new_df$pres))
     pred_risk_mat <- rpost_predict(new_df, pred_idxs, n=n)
@@ -48,13 +57,15 @@ utility <- function(d, known_df, n=1, pred_df=NULL, by=c("date", "site"), u_only
     u_rep <- future_map_dbl(1:ncol(pred_risk_mat), ~{
         new_df$pres[pred_idxs] <- rbinom(nrow(d_df), rep(1, nrow(d_df)), pred_risk_mat[,.x])
         tryCatch(
-            util_rep(new_df, sel),
+            util_fun(new_df, sel=sel, risk_df=risk_df),
             error=function(e) {on_inla_error(e, d, new_df$pres[pred_idxs])}
-        )}, .options=furrr_options(seed=TRUE)
+        )
+        }, .options=furrr_options(seed=TRUE)
     )
     if (u_only)
         return(mean(u_rep, na.rm=TRUE))
-    return(tibble_row(dopt=mean(u_rep, na.rm=TRUE), design=list(d)))
+    uname <- substitute(util_fun) |> as.character() |> str_remove("util_")
+    return(tibble_row({{uname}} := mean(u_rep, na.rm=TRUE), design=list(d)))
 }
 
 on_inla_error <- function(e, design, sample) {

@@ -52,8 +52,8 @@ names(fx_terms) <- parks_obs |>
 # prior choices:
 # prec for fixed effect = 0.2 -> an increase in 1 std. dev. has 95% chance of causing a 99% change in risk (each covar has sufficient chance to entirely describe risk)
 # prec for random effects AND splines = Gamma(1, 0.1) -> going for more precision than for linear fixed effects, since RWs have so much room to move around per step. A change in "unit" has 2% chance of prec < 0.2
-prec_pri <- list(prec=list(prior="loggamma", param=c(1, 0.1)))
-prec_pri_str <- "list(prec=list(prior='loggamma', param=c(1, 0.1)))" # this one is for get_fx
+prec_pri <- list(prec=list(prior="loggamma", param=c(1, 1)))
+prec_pri_str <- "list(prec=list(prior='loggamma', param=c(1, 1)))" # this one is for get_fx
 
 fx_models <- list(
     slope=get_formula(fx_terms),
@@ -96,9 +96,9 @@ mod_comp_res <- expand_grid(fx=fct_inorder(names(fx_models)), rx=fct_inorder(nam
         form=map2(fx, rx, ~update(fx_models[[.x]], rx_models[[.y]])),
         ft=map(form, ~{
             print(.x)
-            fit_model(.x, parks_obs, fx_prec=0.2, control_compute=list(mlik=TRUE, dic=TRUE))
+            fit_model(.x, parks_obs, fx_prec=0., control_compute=list(mlik=TRUE, dic=TRUE))
         }),
-        mlik=map_dbl(ft, ~.x$mlik[1, 1]), 
+        mlik=map_dbl(ft, ~.x$mlik[1, 1]),
         dic=map_dbl(ft, ~.x$dic$dic),
         cpu=map_dbl(ft, ~.x$cpu.used[4])
     )
@@ -188,23 +188,22 @@ as_tibble(best_fit$summary.random$month) |>
 ggsave("figs/pres-fixed-effects.pdf", width=5.5, height=7.3)
 
 ###
+parks_obs <- read_parks_sf(drop=min_temp) |> 
+    prep_parks_model_data(rescale=FALSE)
 
-all_data <- read_parks_sf(drop=min_temp) |> 
-    prep_parks_model_data(rescale=FALSE) |> 
-    append_pred_grid("geo-files/covar-grid-16km.shp")
+all_data <- append_pred_data(parks_obs, pred_grid=prep_pred_grid(parks_obs))
 
-fit_all <- fit_model(formula_jsdm(all_data, rx_models$`(month+site):species`), all_data, fx_prec=0.2)
-fit_all$summary.fixed # assert: fixed effects were included in the model correctly?
+# fit_all <- fit_model(formula_jsdm(all_data, rx_models$`(month+site):species`), all_data, fx_prec=0.2)
+# fit_all$summary.fixed # assert: fixed effects were included in the model correctly?
 
 post_pred_grid <- all_data |>
     mutate(
-        month=lubridate::month(month, label=TRUE), # month to english
+        month=lubridate::month(month, label=TRUE, abbr=FALSE), # month to english
         tick_class=str_replace(tick_class, " ", "\n"),
         mean_pres=fit_all$summary.fitted.values$mean,
-        sd_pres=fit_all$summary.fitted.values$sd,
-        var_eta=fit_all$summary.linear.predictor$sd^2
-    ) |> 
-    filter(is.na(pres))
+        sd_pres=fit_all$summary.fitted.values$sd
+    ) |>
+    filter(is.na(pres) & str_detect(site, "g\\d+"))
 
 pred_map_theme <- theme_bw() +
     theme(
@@ -216,7 +215,7 @@ pred_map_theme <- theme_bw() +
     )
 
 p1 <- ggplot(post_pred_grid, aes(col=mean_pres)) +
-    geom_sf(shape=15, alpha=0.95, size=1.1) +
+    geom_sf(shape=15, alpha=0.95, size=1.02) +
     scale_color_viridis_c(option="mako") +
     # new_scale_color() +
     # geom_sf(aes(col=as.factor(pres)), data=pres, size=1.5) +
@@ -225,24 +224,42 @@ p1 <- ggplot(post_pred_grid, aes(col=mean_pres)) +
     labs(col="Probability tick present") +
     pred_map_theme +
     theme(
-        strip.text.x=element_text(size=rel(1.2)), 
-        strip.text.y=element_text(size=rel(1.05)), 
-        legend.title=element_text(size=rel(1.25))
+        strip.text.x=element_text(size=rel(1.05))
+        # strip.text.y=element_text(size=rel(1.05)), 
+        # legend.title=element_text(size=rel(1.25))
     )
 
 p2 <- ggplot(post_pred_grid, aes(col=sd_pres)) +
-    geom_sf(shape=15, alpha=0.95, size=1.1) +
+    geom_sf(shape=15, alpha=0.95, size=1.02) +
     scale_color_viridis_c(option="magma", breaks=seq(0, 0.4, 0.1), limits=c(0, 0.4)) +
     facet_grid(tick_class~month, labeller=as_labeller(c(tick_class=label_wrap_gen))) +
     labs(col="Standard deviation") +
     pred_map_theme +
     theme(
-        strip.text.x=element_text(size=rel(1.2)), 
-        strip.text.y=element_text(size=rel(1.05)), 
-        legend.title=element_text(size=rel(1.25))
+        strip.text.x=element_text(size=rel(1.05))
+        # strip.text.y=element_text(size=rel(1.05)), 
+        # legend.title=element_text(size=rel(1.25))
     )
 
-ggsave("bdhsc-conf-pres/presence-prediction-map.pdf", grid.arrange(p1, p2, nrow=2), width=12, height=8)
+ggsave("figs/presence-prediction-map.pdf", plot_grid(p1, p2, nrow=2), width=11.5, height=7)
+
+# Reporting the residual variability in collection timing and site----------------
+
+m_sd_mon <- inla.tmarginal(function(x) sqrt(1/x), fit_all$marginals.hyperpar$`Precision for month`)
+inla.zmarginal(m_sd_mon)
+inla.hpdmarginal(0.9, m_sd_mon)
+
+m_sd_site <- inla.tmarginal(function(x) sqrt(1/x), fit_all$marginals.hyperpar$`Precision for site`)
+inla.zmarginal(m_sd_site)
+inla.hpdmarginal(0.9, m_sd_site)
+
+# Prior prediction----------------------------------------------------------------
+parks_pri_pred <- parks_obs
+parks_pri_pred$pres <- NA
+
+ft_pri_pred <- fit_model(formula_bed(), parks_pri_pred, fx_prec=0.2)
+
+summary(ft_pri_pred$summary.linear.predictor$`0.025quant`)
 
 ## ROC curves for all observations and each species, based on mean fitted values
 # preds <- transmute(parks_model_data, tick_class, pres, pred=best_fit$summary.fitted.values$mean)

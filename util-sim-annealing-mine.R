@@ -6,11 +6,8 @@ library(furrr)
 
 source("other-helpers.R")
 source("utility-helpers.R")
-dir.create("util-results", showWarnings=FALSE)
 
-set.seed(222)
-inla.setOption(inla.mode="classic", num.threads="16:1")
-plan(future::multicore(workers=8))
+inla.setOption(inla.mode="classic")
 
 init_d_cand <- function(pred_df) {
     pred_df |> 
@@ -92,22 +89,27 @@ all_data <- append_pred_data(parks_obs) |>
 pred_mod <- filter(all_data, is.na(pres)) # final not yet observed data for fitting models
 obs_mod <- filter(all_data, !is.na(pres)) # final observed data for fitting models
 
-n_est <- 30
+n_est <- 40
 n <- 50
 
-d_so_far <- tibble()
-for (i in 1:4) {
-    sa_res <- simulated_annealing(pred_mod, obs_mod, 5, iter=10, alpha=0.9, T0=1, n_est=n_est, d_so_far=d_so_far, info_iter=2)
+d_init <- res$design
+for (i in 3) {
+    sa_res <- simulated_annealing(pred_mod, obs_mod, 15, iter=20, alpha=1.7, T0=0.001, n_est=n_est, d_init=d_init[[i]], info_iter=5)
     d_so_far <- sa_res$d
     u_res <- utility(sa_res$d, obs_mod, n=n, pred_df=pred_mod)
     res <- tibble_row(!!!u_res, num_loc=nrow(d_so_far))
-    saveRDS(res, paste0("util-results/util-sim-ann-alphapt9-T01-", i, ".rds"))
+    saveRDS(res, paste0("util-results/util-sim-ann-alpha1pt5-T0pt2-mod-", i, ".rds"))
 }
 
-# res <- map_dfr(1:4, ~{
-#     res_d <- readRDS(paste0("util-results/util-sim-ann", .x, ".rds"))
-#     # file.remove(paste0("mcmc-err", .x, ".rds"))
-#     res_d
-# })
-# 
-# saveRDS(res, "util-results/util-sim-ann.rds")
+res <- map_dfr(2, ~{
+    res_d <- readRDS(paste0("util-results/util-sim-ann-alpha1pt5-T0pt2-", .x, ".rds"))
+    # file.remove(paste0("mcmc-err", .x, ".rds"))
+    res_d
+})
+
+res[c(1, 3),] <- res_mod[c(1, 3),]
+ 
+saveRDS(res, "util-results/util-sim-ann.rds")
+
+###
+append_pred_grid(parks_data)

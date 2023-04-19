@@ -36,7 +36,7 @@ prep_parks_model_data <- function(parks_sf, rescale=TRUE) {
         arrange(tcnum)
 }
 
-append_pred_data <- function(obs_df, f="data-proc/parks-design-space.shp") {
+append_pred_data <- function(obs_df, f="data-proc/parks-design-space.shp", pred_grid=NULL, drop_new_lcc=TRUE) {
     pred_df <- st_read(f) |> 
         rename(
             land_cover=lnd_cvr, tree_canopy=tr_cnpy, elevation=elevatn, min_temp=min_tmp, max_temp=max_tmp,
@@ -51,8 +51,38 @@ append_pred_data <- function(obs_df, f="data-proc/parks-design-space.shp") {
         mutate(data=list(tibble(tick_class=unique(obs_df$tick_class), pres=NA, tcnum=1:3))) |> 
         unnest(c(data))
     
+    # Optionally add the pred grid. WARNING: this will result in different scaling than if pred grid were not included
+    if (!is.null(pred_grid))
+        pred_df <- bind_rows(pred_df, pred_grid)
+    
+    if (drop_new_lcc)
+        pred_df <- filter(pred_df, land_cover %in% levels(obs_df$land_cover)) |> mutate(land_cover=fct_drop(land_cover))
+    
     # WARNING: all_data has now been scaled, and is the reference covar values for all subdesigns
     return(prep_new_data(obs_df, pred_df, scale=TRUE))
+}
+
+# parks_data should already be centered/scaled (which is fine because this data is never actually influencing model fit),
+# and should contain both the visitation and design space parks data
+prep_pred_grid <- function(parks_data, f="geo-files/covar-grid-16km.shp") {
+    covar_grid <- st_read(f) |> 
+        rename(
+            land_cover=lnd_cvr, tree_canopy=tr_cnpy, elevation=elevatn, min_temp=min_tmp, max_temp=max_tmp,
+            precipitation=prcpttn, jan_min_temp=jn_mn_t
+        ) |> 
+        mutate(land_cover=land_cover_labels(land_cover)) |> 
+        select(-min_temp)
+    
+    # Add a unique site label to each grid location (i.e. const. over time)
+    covar_grid <- covar_grid |> 
+        group_by(geo=as.character(geometry)) |> 
+        mutate(site=str_c("g", cur_group_id())) |> 
+        ungroup() |> 
+        select(-geo) |> 
+        mutate(data=list(tibble(tick_class=unique(parks_data$tick_class), pres=NA, tcnum=1:3))) |> 
+        unnest(c(data))
+    
+    covar_grid
 }
 
 # This should be a function, since 1) the covariate scaling is very much dependent on the chosen locations now, and 

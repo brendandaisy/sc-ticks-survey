@@ -66,7 +66,7 @@ u_random <- load_util_res(u_random, "random", n=n)
 
 # Select sites with largest average variance among species,-----------------------
 # only choosing a site one time---------------------------------------------------
-grid_mod_sort <- grid_mod |> 
+pred_mod_sort <- pred_mod |> 
     group_by(date, site) |> 
     # average variance from each species:
     summarise(var_eta=mean(var_eta), .groups="drop") |> 
@@ -76,10 +76,10 @@ grid_mod_sort <- grid_mod |>
     filter(row_number() == 1) |> 
     ungroup()
 
-u_simple_var <- map_dfr(num_loc, ~{ # only have to do each B once since deterministic
+u_simple_var <- map_dfr(num_loc, ~{
     print(paste0("num_loc=", .x))
-    d <- head(grid_mod_sort, .x)
-    mutate(utility(d, parks_mod, n=50, full_df=grid_mod), num_loc=.x)
+    d <- head(pred_mod_sort, .x)
+    mutate(utility(d, obs_mod, n=n, pred_df=pred_mod), num_loc=.x)
 })
 
 saveRDS(u_simple_var, "util-results/util-simple-var.rds")
@@ -87,7 +87,70 @@ saveRDS(u_simple_var, "util-results/util-simple-var.rds")
 u_simple_var <- save_util_res(u_simple_var, "simple-var", n=n)
 u_simple_var <- load_util_res(u_simple_var, "simple-var", n=n)
 
-###
+# Space-filling strategy----------------------------------------------------------
+# spread out samples over time, with pairs a given dist. away---------------------
+choose_dates <- function(dates, num) {
+    if (length(dates) >= num) {
+        return(sample(dates, num, replace=FALSE))
+    }
+    ret <- sample(dates, replace=FALSE) # shuffle
+    c(ret, sample(dates, num-length(dates), replace=TRUE))
+}
+
+get_design_spacefill <- function(sites, dates, num, pairs) {
+    ret <- character(num)
+    num_acc <- 1
+    ret[num_acc] <- sample(sites, 1)
+    sites2 <- sites # for if there are not enough valid locations
+    while (num_acc < num) {
+        s <- sample(sites, 1)
+        banp <- semi_join(tibble(s1=ret, s2=s), pairs, by=c("s1", "s2"))
+        if (nrow(banp) > 0) {
+            sites <- sites[sites != s]
+            if (length(sites) == 0)
+                break
+            next
+        }
+        num_acc <- num_acc + 1
+        ret[num_acc] <- s
+    }
+    if (num_acc < num)
+        ret[(num_acc+1):num] <- sample(sites2, num-num_acc)
+    return(tibble(site=ret, date=choose_dates(dates, length(ret))))
+}
+
+sp_unvis_loc <- all_loc_sp |> 
+    filter(!(site %in% unique(obs_mod$site))) |> 
+    distinct(site, geometry)
+
+min_dist <- units::as_units(25000, "m")
+
+banned_pairs <- sp_unvis_loc |> 
+    cross_join(sp_unvis_loc) |> 
+    filter(st_distance(geometry.x, geometry.y, by_element=TRUE) < min_dist) |> 
+    transmute(s1=site.x, s2=site.y)
+
+u_spacefill <- map_dfr(num_loc[-1], ~{
+    print(paste0("num_loc=", .x))
+    dsfill <- get_design_spacefill(sp_unvis_loc$site, unique(pred_mod$date), .x, banned_pairs)
+    mutate(utility(dsfill, obs_mod, n=n, pred_df=pred_mod), num_loc=.x)
+})
+
+saveRDS(u_spacefill, "util-results/util-spacefill-5.rds")
+
+## load all spacefill results, pick best and save
+
+u_spacefill <- map_dfr(1:5, ~readRDS(paste0("util-results/util-spacefill-", .x, ".rds")))
+
+u_spacefill <- u_spacefill |> 
+    filter(num_loc > 1) |> 
+    group_by(num_loc) |> 
+    slice_max(dopt, n=1) |> 
+    ungroup()
+
+saveRDS(u_spacefill, "util-results/util-spacefill.rds")
+
+# Local utility stuff-------------------------------------------------------------
 
 local_utility <- function(d, known_df, pred_df=NULL, copy=FALSE) {
 # TODO: revisit at some point whether known_df can be removed, or can be used for only one tick species
@@ -345,30 +408,40 @@ utils0 |>
 
 # Plot the results comparing all strategies---------------------------------------
 
-strats <- c("util-random", "util-simple-var", "util-sim-ann-local-alpha0pt9-T02", "util-sim-ann")
-names(strats) <- c("Random", "Simple Var", "Local", "Simulated Annealing")
+strats <- c("util-random", "util-simple-var", "util-spacefill", "util-sim-ann")
+names(strats) <- c("Random", "Variance", "Space-filling", "Simulated Annealing")
 
 u_res <- strats |> 
     map_dfr(~mutate(readRDS(paste0("util-results/", .x, ".rds")), strat=.x)) |> 
-    mutate(strat=fct_recode(strat, !!!strats))
+    mutate(strat=fct_recode(strat, !!!strats)) |> 
+    mutate(strat=fct_relevel(strat, "Variance"))
 
 u_res_random <- filter(u_res, strat == "Random")
 
 u_res <- u_res_random |> 
     filter(num_loc == 1) |> 
     slice_max(dopt, n=1) |> 
-    mutate(strat="Simulated Annealing") |> 
+    select(-strat) |> 
+    bind_cols(strat=as.factor(c("Space-filling", "Simulated Annealing"))) |> 
     bind_rows(u_res)
 
 u_rand_mean <- u_res_random |> 
     group_by(num_loc) |> 
     summarise(mean=mean(dopt))
+
+hline_col <- c("#3c4276", "#3798a9", "#7fd7b8", "#98d180")
     
-gg <- ggplot(res, aes(factor(num_loc), dopt)) +
+gg <- ggplot(u_res_random, aes(factor(num_loc), dopt)) +
+    geom_hline(yintercept=u_one_offs$utility, col=hline_col, alpha=0.65, linewidth=1, linetype="dashed") +
     geom_violin(fill="#9ac9e7", col="gray70", alpha=0.75)  +
-    geom_point(col="#9ac9e7", size=0.9) +
+    geom_point(size=0.84, col="#9ac9e7") +
     coord_cartesian(clip="off") +
-    # ylim(NA, 30) +
+    annotate(
+        "text",
+        label=u_one_offs$strat,
+        y=u_one_offs$utility + c(0, -0.05, 0.05, 0),
+        col=hline_col, x=5.45, hjust="left", size=3
+    ) +
     labs(x="Number of new visits", y="Utility", col="Search strategy") +
     theme_bw() +
     theme(
@@ -377,68 +450,64 @@ gg <- ggplot(res, aes(factor(num_loc), dopt)) +
         # axis.text=element_text(size=rel(1.1))
     )
 
-ggsave("figs/util-results1.pdf", width=4.8, height=4)
-
-hline_col <- c("#3c4276", "#3798a9", "#7fd7b8", "#98d180")
-
 plot_oneoffs <- function(i) {
     gg2 <- gg +
         geom_hline(yintercept=u_one_offs$utility[1:i], col=hline_col[1:i], alpha=0.65, linewidth=1, linetype="dashed") +
         annotate(
             "text", 
             label=u_one_offs$strat[1:i], 
-            y=u_one_offs$utility[1:i] + c(-0.2, -0.63, 0.63, 0)[1:i], 
+            # y=u_one_offs$utility[1:i] + c(-0.2, -0.63, 0.63, 0)[1:i], 
+            y=u_one_offs$utility[1:i], 
             col=hline_col[1:i], x=5.5, hjust="left", size=3
         )
     
     ggsave(paste0("figs/util-results2", letters[i], ".pdf"), width=4.8, height=4)
-    gg2
 }
-
-gg2 <- plot_oneoffs(4)
+# gg2 <- plot_oneoffs(4)
 
 plot_searches <- function(vars) {
-    u_sub <- filter(u_res, strat != "Random", strat %in% vars)
+    u_sub <- filter(u_res, strat != "Random", strat %in% vars) |> 
+        mutate(strat=fct_rev(strat))
     
-    gg2 +
-        geom_line(aes(col=fct_relevel(strat, "Simple Var"), group=strat), u_sub) +
-        geom_point(aes(col=fct_relevel(strat, "Simple Var")), u_sub, size=0.9) +
-        scale_color_manual(values=c("#f5b43d", "#f53db5", "#c63df5")[seq_along(vars)]) +
+    gg +
+        geom_line(aes(col=strat, group=strat), u_sub) +
+        geom_point(aes(col=strat), u_sub, size=0.9) +
+        scale_color_manual(values=c("#f5b43d", "#ff856d", "#c63df5")[seq_along(vars)]) +
         theme(legend.position="top", plot.margin=unit(c(t=0, r=1, b=0, l=0), "in"))
-    
-    ggsave(paste0("figs/util-results3", letters[length(vars)], ".pdf"), width=4.9, height=4.2)
 }
 
-plot_searches(c("Simple Var", "Local", "Simulated Annealing"))
+gg3 <- plot_searches(c("Variance", "Space-filling", "Simulated Annealing"))
+ggsave("figs/util-results.pdf", gg3, width=5.2, height=4.3)
 
 ###
 
-all_loc_sp <- append_pred_grid(parks_data) |> 
+all_loc_sp <- read_sf("data-proc/parks-design-space.shp") |> 
     distinct(site, geometry)
 
 plot_design_map <- function(d, col) {
-    d_sp <- inner_join(all_loc_sp, d) |> 
-        mutate(month=fct_drop(lubridate::month(date, label=TRUE, abbr=FALSE), c("January", "February")))
+    d_sp <- inner_join(all_loc_sp, d, multiple="all") |> 
+        mutate(month=lubridate::month(date, label=TRUE, abbr=TRUE))
     
     ggplot(d_sp) +
         geom_sf(data=sc_state, fill=NA, col="gray70", linewidth=0.7, alpha=0.9) +
-        geom_sf(col=col, alpha=0.8, size=1.2) +
-        facet_wrap(~month, drop=FALSE, nrow=3) +
+        geom_sf(col=col, alpha=0.8, size=1.1) +
+        # geom_sf_text(aes(label=site), col=col, alpha=0.8, size=1.6, nudge_y=-0.2, nudge_x=0.2) +
+        facet_wrap(~month, drop=FALSE, nrow=2) +
         map_theme
 }
 
 sc_state <- st_read("geo-files/south-carolina-county-boundaries.shp") |> 
-    st_transform(st_crs(all_loc_sp)) |> 
+    st_transform(st_crs(parks_obs)) |> 
     st_union() |> 
     nngeo::st_remove_holes()
 
 map_theme <- theme_bw() +
     theme(
-        axis.text=element_blank(), axis.ticks=element_blank(),
+        axis.text=element_blank(), axis.ticks=element_blank(), axis.title=element_blank(),
         panel.spacing=unit(0.55, "mm"),
         plot.margin=unit(c(0, 0.4, 0, 0), "mm"),
         panel.grid=element_blank(),
-        strip.text=element_text(size=rel(1.15))
+        # strip.text=element_text(size=rel(1.15))
     )
 
 plot_design_map(u_one_offs$design[[3]], hline_col[3])
@@ -446,4 +515,4 @@ ggsave("figs/util-map2c.pdf", width=3.8, height=3.2)
 
 search_cols <- c("#f5b43d", "#f53db5", "#c63df5")
 plot_design_map(filter(u_res, num_loc == 20, strat == "Simulated Annealing")$design[[1]], search_cols[3])
-ggsave("figs/util-map3c.pdf", width=3.8, height=3.2)
+ggsave("figs/util-map3-sa.pdf", width=4.8, height=4.2)

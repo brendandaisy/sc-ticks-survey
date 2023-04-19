@@ -4,28 +4,23 @@ library(tidyverse)
 library(sf)
 library(furrr)
 
-inla.setOption(inla.mode="classic", num.threads="8:1")
-
 source("other-helpers.R")
 source("utility-helpers.R")
 
-dir.create("util-results", showWarnings=FALSE)
-
-set.seed(202)
-plan(future::multisession(workers=XX))
+inla.setOption(inla.mode="classic")
 
 # Data preparation----------------------------------------------------------------
-parks_obs <- read_parks_sf(drop=min_temp) |> 
-    prep_parks_model_data(rescale=FALSE)
+df_list <- readRDS("data-proc/bo-risk-sd-dfs.rds")
+obs_mod <- df_list$obs
+pred_mod <- df_list$pred
+risk_mod <- df_list$risk_grid
 
-all_data <- append_pred_data(parks_obs) |> 
-    st_drop_geometry()
-
-pred_mod <- filter(all_data, is.na(pres)) # final not yet observed data for fitting models
-obs_mod <- filter(all_data, !is.na(pres)) # final observed data for fitting models
+# df_list <- readRDS("data-proc/bo-dopt-dfs.rds")
+# obs_mod <- df_list$obs
+# pred_mod <- df_list$pred
 
 num_loc <- c(1, seq(5, 20, 5))
-reps <- 10
+reps <- 3
 expg <- expand_grid(num_loc=num_loc, rep=1:reps)
 n <- 50
 
@@ -35,16 +30,16 @@ u_random <- function(num_loc, i) {
         select(date, site) |> 
         slice_sample(n=num_loc)
     
-    res <- tibble_row(!!!utility(d, obs_mod, n=n, pred_df=pred_mod), num_loc=num_loc)
-    saveRDS(res, paste0("util-results/util-random", i+25, ".rds"))
+    res <- tibble_row(
+        !!!utility(d, obs_mod, n=n, pred_df=pred_mod, util_fun=util_risk_sd, risk_df=risk_mod),
+        num_loc=num_loc
+    )
+    print(res)
+    saveRDS(res, paste0("util-results/risk-sd/util-random", i+15, ".rds"))
 }
 
 iwalk(expg$num_loc, u_random)
 
-res <- map_dfr(1:nrow(expg), ~{
-    res_d <- readRDS(paste0("util-results/util-random", .x, ".rds"))
-    # file.remove(paste0("mcmc-err", .x, ".rds"))
-    res_d
-})
+res <- map_dfr(1:30, ~readRDS(paste0("util-results/risk-sd/util-random", .x, ".rds")))
 
 saveRDS(res, "util-results/util-random.rds")

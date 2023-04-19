@@ -57,7 +57,7 @@ Also, get state boundary lines:
 
 ```{r}
 sc_state <- st_read("geo-files/south-carolina-county-boundaries.shp") |> 
-    st_transform(crs(lcov)) |> 
+    st_transform(crs(all_parks)) |> 
     st_union() |> 
     nngeo::st_remove_holes()
 ```
@@ -129,9 +129,10 @@ plan(multisession, workers=8) # set up parallel session
 ```{r}
 # dates_parks <- unique(floor_date(parks_proj$date, "months"))
 park_locations <- distinct(all_parks, site, geometry)
+future_dates <- unique(all_parks$date)
 vars <- c("min-temp", "max-temp", "mean-temp", "precipitation", "dew-point")
 
-met <- map(vars, ~load_prism_var(.x, unique(all_parks$date), park_locations))
+met <- map(vars, ~load_prism_var(.x, future_dates, park_locations))
 names(met) <- str_replace(vars, "-", "_")
 
 all_parks <- met$min_temp |>
@@ -191,82 +192,76 @@ st_write(all_parks, "data-proc/parks-design-space.shp", append=FALSE)
 st_write(park_counts, "data-proc/parks-observed.shp", append=FALSE)
 ```
 
-<!-- ## Create a spatial grid using the NLCD 2019 data -->
+## Create a spatial grid using the NLCD 2019 data
 
-<!-- These come as raster files with a 30m x 30m resolution. However, since PRISM only reports their variables at a 4km resolution, and since we will not be able to make monthly predictions at such a fine scale, the grid is aggregated to roughly 4km using the most dominant class within a 4km tile. -->
+These come as raster files with a 30m x 30m resolution. However, since PRISM only reports their variables at a 4km resolution, and since we will not be able to make monthly predictions at such a fine scale, the grid is aggregated to roughly 4km using the most dominant class within a 4km tile.
 
-<!-- The rasters are then converted to points form, creating a dataframe of points along a grid. The dataframe is then filtered to only contain points within the South Carolina border. -->
+The rasters are then converted to points form, creating a dataframe of points along a grid. The dataframe is then filtered to only contain points within the South Carolina border.
 
-<!-- ```{r} -->
-<!-- get_landcover_grid <- function(fname=NULL, bounds=NULL, mult=1, poly=FALSE) { -->
-<!--     if (is.null(bounds)) -->
-<!--         return(st_read(fname)) # then fname is a saved file so read it -->
+```{r}
+get_landcover_grid <- function(fname=NULL, bounds=NULL, mult=1, poly=FALSE) {
+    if (is.null(bounds))
+        return(st_read(fname)) # then fname is a saved file so read it
 
-<!--     lcov <- raster("geo-files/land-cover/NLCD_2019_Land_Cover_L48_20210604_yDj0p7IM7PAX2WUUipna.tiff") -->
-<!--     lcov_agg <- aggregate(lcov, 133*mult, fun=modal) -->
+    lcov <- raster("geo-files/land-cover/NLCD_2019_Land_Cover_L48_20210604_yDj0p7IM7PAX2WUUipna.tiff")
+    lcov_agg <- aggregate(lcov, 133*mult, fun=modal)
 
-<!--     if (poly) { -->
-<!--         to_func <- rasterToPolygons -->
-<!--         suffix <- paste0("poly-", mult*4, "km.shp") -->
-<!--     } -->
-<!--     else { -->
-<!--         to_func <- function(x) rasterToPoints(x, spatial=TRUE) -->
-<!--         suffix <- paste0("grid-", mult*4, "km.shp") -->
-<!--     } -->
-<!--     lcov_sp <- to_func(lcov_agg) |>  -->
-<!--         st_as_sf() |>  -->
-<!--         rename(land_cover=NLCD_2019_Land_Cover_L48_20210604_yDj0p7IM7PAX2WUUipna) |>  -->
-<!--         st_transform(crs(bounds)) -->
+    if (poly) {
+        to_func <- rasterToPolygons
+        suffix <- paste0("poly-", mult*4, "km.shp")
+    }
+    else {
+        to_func <- function(x) rasterToPoints(x, spatial=TRUE)
+        suffix <- paste0("grid-", mult*4, "km.shp")
+    }
+    lcov_sp <- to_func(lcov_agg) |>
+        st_as_sf() |>
+        rename(land_cover=NLCD_2019_Land_Cover_L48_20210604_yDj0p7IM7PAX2WUUipna) |>
+        st_transform(crs(bounds))
 
-<!--     u <- st_within(lcov_sp, bounds) -->
-<!--     ret <- lcov_sp[map_lgl(u, ~length(.x) > 0),] -->
-<!--     st_write(ret, paste0("geo-files/landcover-", suffix), delete_dsn=TRUE) -->
-<!--     return(ret) -->
-<!-- } -->
+    u <- st_within(lcov_sp, bounds)
+    ret <- lcov_sp[map_lgl(u, ~length(.x) > 0),]
+    st_write(ret, paste0("geo-files/landcover-", suffix), delete_dsn=TRUE)
+    return(ret)
+}
 
-<!-- get_canopy_grid <- function(fname=NULL, bounds=NULL, mult=1, poly=FALSE) { -->
-<!--     if (is.null(bounds)) -->
-<!--         return(st_read(fname)) -->
+get_canopy_grid <- function(fname=NULL, bounds=NULL, mult=1, poly=FALSE) {
+    if (is.null(bounds))
+        return(st_read(fname))
 
-<!--     canopy <- raster("geo-files/land-cover/NLCD_2016_Tree_Canopy_L48_20190831_yDj0p7IM7PAX2WUUipna.tiff") -->
-<!--     canopy_agg <- aggregate(canopy, 133*mult, fun=mean) -->
+    canopy <- raster("geo-files/land-cover/NLCD_2016_Tree_Canopy_L48_20190831_yDj0p7IM7PAX2WUUipna.tiff")
+    canopy_agg <- aggregate(canopy, 133*mult, fun=mean)
 
-<!--     if (poly) { -->
-<!--         to_func <- rasterToPolygons -->
-<!--         suffix <- paste0("poly-", mult*4, "km.shp") -->
-<!--     } -->
-<!--     else { -->
-<!--         to_func <- function(x) rasterToPoints(x, spatial=TRUE) -->
-<!--         suffix <- paste0("grid-", mult*4, "km.shp") -->
-<!--     } -->
-<!--     canopy_sp <- to_func(canopy_agg) |>  -->
-<!--         st_as_sf() |> -->
-<!--         rename(tree_canopy=NLCD_2016_Tree_Canopy_L48_20190831_yDj0p7IM7PAX2WUUipna) |> -->
-<!--         st_transform(crs(bounds)) -->
+    if (poly) {
+        to_func <- rasterToPolygons
+        suffix <- paste0("poly-", mult*4, "km.shp")
+    }
+    else {
+        to_func <- function(x) rasterToPoints(x, spatial=TRUE)
+        suffix <- paste0("grid-", mult*4, "km.shp")
+    }
+    canopy_sp <- to_func(canopy_agg) |>
+        st_as_sf() |>
+        rename(tree_canopy=NLCD_2016_Tree_Canopy_L48_20190831_yDj0p7IM7PAX2WUUipna) |>
+        st_transform(crs(bounds))
 
-<!--     u <- st_within(canopy_sp, bounds) -->
-<!--     ret <- canopy_sp[map_lgl(u, ~length(.x) > 0),] -->
-<!--     st_write(ret, paste0("geo-files/canopy-", suffix), delete_dsn=TRUE) -->
-<!--     return(ret) -->
-<!-- } -->
+    u <- st_within(canopy_sp, bounds)
+    ret <- canopy_sp[map_lgl(u, ~length(.x) > 0),]
+    st_write(ret, paste0("geo-files/canopy-", suffix), delete_dsn=TRUE)
+    return(ret)
+}
 
-<!-- add_elevation_grid <- function(nlcd_grid) { -->
-<!--     elevation <- raster("geo-files/elevation/PRISM_us_dem_4km_bil.bil") -->
-<!--     elevation <- projectRaster(elevation, crs=crs(nlcd_grid)) -->
-<!--     if (any(st_is(nlcd_grid, "POLYGON"))) -->
-<!--         rvals <- raster::extract(elevation, nlcd_grid, fun=mean) -->
-<!--     else -->
-<!--         rvals <- raster::extract(elevation, nlcd_grid) -->
-<!--     mutate(nlcd_grid, elevation=rvals, .after=tree_canopy) -->
-<!-- } -->
-<!-- ``` -->
-
-<!-- ```{r} -->
-<!-- sc_state <- st_read("geo-files/south-carolina-county-boundaries.shp") |>  -->
-<!--     st_transform(crs(parks_proj)) |>  -->
-<!--     st_union() |>  -->
-<!--     nngeo::st_remove_holes() -->
-<!-- ``` -->
+add_elevation_grid <- function(nlcd_grid) {
+    elevation <- raster("geo-files/elevation/PRISM_us_dem_4km_bil.bil")
+    #     print(elevation)
+    # elevation <- projectRaster(elevation, crs=crs(nlcd_grid))
+    if (any(st_is(nlcd_grid, "POLYGON")))
+        rvals <- raster::extract(elevation, nlcd_grid, fun=mean)
+    else
+        rvals <- raster::extract(elevation, nlcd_grid)
+    mutate(nlcd_grid, elevation=rvals, .after=tree_canopy)
+}
+```
 
 <!-- The grid can be loaded like this: -->
 
@@ -287,14 +282,14 @@ st_write(park_counts, "data-proc/parks-observed.shp", append=FALSE)
 <!-- ``` -->
 
 
-<!-- Also, make a corresponding 16km resolution grid for making predictions, if it doesn't already exist: -->
-<!-- ```{r} -->
-<!-- lcov_grid_16k <- get_landcover_grid(bounds=sc_state, mult=4) -->
-<!-- canopy_grid_16k <- get_canopy_grid(bounds=sc_state, mult=4) -->
-<!-- # lcov_grid_16k <- get_landcover_grid("geo-files/landcover-grid-16km.shp") -->
-<!-- # canopy_grid_16k <- get_canopy_grid("geo-files/canopy-grid-16km.shp") |> rename(tree_canopy=tr_cnpy) -->
-<!-- nlcd_grid_16k <- st_join(lcov_grid_16k, canopy_grid_16k) |> add_elevation_grid() -->
-<!-- ``` -->
+Also, make a corresponding 16km resolution grid for making predictions, if it doesn't already exist:
+```{r}
+# lcov_grid_16k <- get_landcover_grid(bounds=sc_state, mult=4)
+# canopy_grid_16k <- get_canopy_grid(bounds=sc_state, mult=4)
+lcov_grid_16k <- get_landcover_grid("geo-files/landcover-grid-16km.shp")
+canopy_grid_16k <- get_canopy_grid("geo-files/canopy-grid-16km.shp") |> rename(tree_canopy=tr_cnpy)
+nlcd_grid_16k <- st_join(lcov_grid_16k, canopy_grid_16k) |> add_elevation_grid()
+```
 
 <!-- ```{r} -->
 <!-- vars <- c("min-temp", "max-temp", "mean-temp", "precipitation", "dew-point") -->
@@ -317,19 +312,20 @@ st_write(park_counts, "data-proc/parks-observed.shp", append=FALSE)
 <!-- ``` -->
 
 <!-- We also repeat this process for the 16km grid: -->
-<!-- ```{r} -->
-<!-- met_16km <- map(vars, ~load_prism_var(.x, future_dates, nlcd_grid_16k)) -->
-<!-- names(met_16km) <- str_replace(vars, "-", "_") -->
+```{r}
+vars <- c("min-temp", "max-temp", "mean-temp", "precipitation", "dew-point")
+met_16km <- map(vars, ~load_prism_var(.x, future_dates, nlcd_grid_16k))
+names(met_16km) <- str_replace(vars, "-", "_")
 
-<!-- covar_grid_16km <- met_16km$min_temp |> -->
-<!--     mutate( -->
-<!--         month=month(date), -->
-<!--         year=year(date), -->
-<!--         max_temp=met_16km$max_temp$max_temp, -->
-<!--         precipitation=met_16km$precipitation$precipitation,  -->
-<!--         mean_rh=relative_humidity(met_16km$mean_temp$mean_temp, met_16km$dew_point$dew_point) -->
-<!--     ) -->
-<!-- ``` -->
+covar_grid_16km <- met_16km$min_temp |>
+    mutate(
+        month=month(date),
+        year=year(date),
+        max_temp=met_16km$max_temp$max_temp,
+        precipitation=met_16km$precipitation$precipitation,
+        mean_rh=relative_humidity(met_16km$mean_temp$mean_temp, met_16km$dew_point$dew_point)
+    )
+```
 
 <!-- As an example, we can view the precipitation normals on April 1st: -->
 
@@ -338,25 +334,26 @@ st_write(park_counts, "data-proc/parks-observed.shp", append=FALSE)
 <!--     geom_sf(aes(col=precipitation), size=1) -->
 <!-- ``` -->
 
-<!-- ## Annual minima on grid -->
+## Annual minima on grid
 
-<!-- Now add annual temperature minima for 2020 and 2021, **defined as the minimum daily temperature at a location, averaged over the month of January**, again using data from PRISM. These new values are then added to `covar_grid` as a new column. -->
+Now add annual temperature minima for 2020 and 2021, **defined as the minimum daily temperature at a location, averaged over the month of January**, again using data from PRISM. These new values are then added to `covar_grid` as a new column.
 
 <!-- ```{r} -->
 <!-- dates_min <- as.Date("2022-01-01") -->
 
-<!-- tmin <- load_prism_var("min-temp", dates_min, nlcd_grid) |>  -->
+<!-- tmin <- load_prism_var("min-temp", dates_min, nlcd_grid) |> -->
 <!--     mutate(year=year(date)) -->
 
 <!-- covar_grid <- st_join(covar_grid, select(tmin, jan_min_temp=min_temp)) -->
 <!-- ``` -->
 
-<!-- ```{r} -->
-<!-- tmin_16km <- load_prism_var("min-temp", dates_min, nlcd_grid_16k) |>  -->
-<!--     mutate(year=year(date)) -->
+```{r}
+dates_min <- as.Date("2022-01-01")
+tmin_16km <- load_prism_var("min-temp", dates_min, nlcd_grid_16k) |>
+    mutate(year=year(date))
 
-<!-- covar_grid_16km <- st_join(covar_grid_16km, select(tmin_16km, jan_min_temp=min_temp)) -->
-<!-- ``` -->
+covar_grid_16km <- st_join(covar_grid_16km, select(tmin_16km, jan_min_temp=min_temp))
+```
 
 
 <!-- Let's make the minimum temperature looks reasonable: -->
@@ -368,9 +365,9 @@ st_write(park_counts, "data-proc/parks-observed.shp", append=FALSE)
 <!--     labs(col="Mean January minimum (C)") -->
 <!-- ``` -->
 
-<!-- and save the grid of covariates, both resolutions, for later. -->
+and save the grid of covariates, both resolutions, for later.
 
-<!-- ```{r} -->
-<!-- st_write(covar_grid, "geo-files/covar-grid.shp", delete_dsn=TRUE) -->
-<!-- st_write(covar_grid_16km, "geo-files/covar-grid-16km.shp", delete_dsn=TRUE) -->
-<!-- ``` -->
+```{r}
+# st_write(covar_grid, "geo-files/covar-grid.shp", delete_dsn=TRUE)
+st_write(covar_grid_16km, "geo-files/covar-grid-16km.shp", append=FALSE)
+```
