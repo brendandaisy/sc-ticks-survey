@@ -135,7 +135,7 @@ formula_bed <- function(...) {
 
     pres ~ -1 + tick_class + land_cover + tree_canopy + elevation + max_temp + 
         precipitation + jan_min_temp + mean_rh + 
-        f(month, model = "ar1", hyper = prec_pri, group = tcnum, control.group = list(model = "iid", hyper = prec_pri)) + 
+        f(month, model = "ar1", hyper = prec_pri, group = tcnum, control.group = list(model = "iid", hyper = prec_pri)) +
         f(site, model = "iid", hyper = prec_pri, group = tcnum, control.group = list(model = "iid", hyper = prec_pri))
 }
 

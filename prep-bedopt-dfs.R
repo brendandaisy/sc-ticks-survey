@@ -31,12 +31,13 @@ all_data <- mutate(
 pred_mod <- filter(all_data, is.na(pres) & !str_detect(site, "g\\d+")) # final not yet observed data for fitting models
 obs_mod <- filter(all_data, !is.na(pres)) # final observed data for fitting models
 
+# only include visits to sites with risk > 0.7 for 3+ months and/or species per year
 risk_grid_mod <- all_data |> 
     filter(is.na(pres) & str_detect(site, "g\\d+")) |> 
-    group_by(site) |> 
-    mutate(at_risk=sum(mean_pres > 0.7)) |> 
+    group_by(date, site) |> 
+    mutate(at_risk=sum(mean_pres > 0.75)) |> 
     ungroup() |> 
-    filter(at_risk >= 3)
+    filter(at_risk >= 1)
 
 distinct(risk_grid_mod, site)
 

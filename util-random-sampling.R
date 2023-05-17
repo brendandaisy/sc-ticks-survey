@@ -22,10 +22,10 @@ risk_mod <- df_list$risk_grid
 num_loc <- c(1, seq(5, 20, 5))
 reps <- 3
 expg <- expand_grid(num_loc=num_loc, rep=1:reps)
-n <- 50
+n <- 40
 
 # Random selection, baseline design strategy--------------------------------------
-u_random <- function(num_loc, i) {
+u_random <- function(num_loc, i, app_ind=0) {
     d <- pred_mod |> 
         select(date, site) |> 
         slice_sample(n=num_loc)
@@ -35,11 +35,11 @@ u_random <- function(num_loc, i) {
         num_loc=num_loc
     )
     print(res)
-    saveRDS(res, paste0("util-results/risk-sd/util-random", i+15, ".rds"))
+    saveRDS(res, paste0("util-results/risk-sd/util-random/util-random", i+app_ind, ".rds"))
 }
 
-iwalk(expg$num_loc, u_random)
+iwalk(expg$num_loc, u_random, app_ind=30)
 
-res <- map_dfr(1:30, ~readRDS(paste0("util-results/risk-sd/util-random", .x, ".rds")))
+res <- map_dfr(1:45, ~readRDS(paste0("util-results/risk-sd/util-random/util-random", .x, ".rds")))
 
 saveRDS(res, "util-results/util-random.rds")

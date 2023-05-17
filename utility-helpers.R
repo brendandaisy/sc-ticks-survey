@@ -37,8 +37,8 @@ util_risk_sd <- function(new_df, risk_df, sel=NULL) {
     ndf <- bind_rows(new_df, risk_df)
     f <- formula_bed()
     ft <- fit_model(f, ndf, fx_prec=0.2)
-    v <- ft$summary.linear.predictor$sd[-c(1:nrow(new_df))]
-    return(-mean(v))
+    vardiff <- risk_df$sd_pres - ft$summary.fitted.values$sd[-c(1:nrow(new_df))]
+    return(max(vardiff))
 }
 
 # optional full_df can be used to extract all info if d_df only has site and date
@@ -98,4 +98,14 @@ load_util_res <- function(utils, strat=c("random", "simple-var", "bayes-opt", "s
     a <- if (is.null(alpha)) "" else paste0("-alpha=", alpha)
     file <- paste0("util-exper/", strat, "-n=", n, a, ".rds")
     readRDS(file)
+}
+
+# helper function to check tuning of alpha and T0 for SA
+sa_acceptance_prob <- function(u_prop, u_curr, alpha, T0, iter) {
+    T_sched <- T0*seq(1, 0, length.out=iter)^alpha
+    probs <- exp((log10(u_prop) - log10(u_curr)) / T_sched)
+    
+    ggplot(enframe(probs), aes(name, value)) +
+        geom_point() +
+        labs(x="iteration", y="prob.")
 }

@@ -25,44 +25,13 @@ sp_add_norm <- function(df) {
 }
 
 # Data preparation----------------------------------------------------------------
-parks_data <- read_parks_sf("geo-files/parks-with-covars.shp", drop=min_temp) |> 
-    prep_parks_model_data(rescale=FALSE) # don't rescale, since scaled wrt. grid data below
-
-# Predict expected risk across grid, for sampling---------------------------------
-
-# fit_all <- fit_model(formula_bed(), all_data, fx_prec=0.2)
-fit_all <- readRDS("inla-fit-all-data.rds")
-fit_all$summary.fixed # assert: fixed effects were included in the model correctly?
-
-all_data <- append_pred_grid(parks_data) |> 
-    sp_add_norm() |> 
-    mutate(
-        mean_pres=fit_all$summary.fitted.values$mean,
-        sd_pres=fit_all$summary.fitted.values$sd,
-        var_eta=fit_all$summary.linear.predictor$sd^2
-    )
-
-grid_mod <- filter(all_data, is.na(pres)) # final not yet observed data for fitting models
-parks_mod <- filter(all_data, !is.na(pres)) # final observed data for fitting models
-
-# Utility functions considered----------------------------------------------------
+df_list <- readRDS("data-proc/bo-risk-sd-dfs.rds")
+obs_mod <- df_list$obs
+pred_mod <- df_list$pred
+risk_mod <- df_list$risk_grid
 
 num_loc <- c(1, seq(5, 20, 5))
-reps <- 5
-expg <- expand_grid(num_loc=num_loc, rep=1:reps)
-n <- 20
-
-# Random selection, baseline design strategy--------------------------------------
-u_random <- pmap_dfr(expg, ~{
-    d <- grid_mod |> 
-        select(date, site) |> 
-        slice_sample(n=..1)
-    
-    mutate(utility(d, parks_mod, n=n, full_df=grid_mod), num_loc=..1, rep=..2)
-})
-
-# u_random <- save_util_res(u_random, "random", n=n, append=FALSE)
-u_random <- load_util_res(u_random, "random", n=n)
+n <- 40
 
 # Select sites with largest average variance among species,-----------------------
 # only choosing a site one time---------------------------------------------------
@@ -79,13 +48,27 @@ pred_mod_sort <- pred_mod |>
 u_simple_var <- map_dfr(num_loc, ~{
     print(paste0("num_loc=", .x))
     d <- head(pred_mod_sort, .x)
-    mutate(utility(d, obs_mod, n=n, pred_df=pred_mod), num_loc=.x)
+    tibble_row(
+        !!!utility(d, obs_mod, n=n, pred_df=pred_mod, util_fun=util_risk_sd, risk_df=risk_mod),
+        num_loc=.x
+    )
 })
 
-saveRDS(u_simple_var, "util-results/util-simple-var.rds")
+saveRDS(u_simple_var, "util-results/risk-sd/util-simple-var.rds")
 
-u_simple_var <- save_util_res(u_simple_var, "simple-var", n=n)
-u_simple_var <- load_util_res(u_simple_var, "simple-var", n=n)
+dtmp <- risk_mod |> 
+    distinct(date, site) |> 
+    slice_sample(n=10)
+
+all_data
+
+dtmp <- pred_mod |> 
+    filter(str_detect(land_cover, "Developed")) |> 
+    group_by(date, site) |> 
+    slice_sample(n=10) |> 
+    ungroup()
+
+tmp <- utility(dtmp, obs_mod, pred_df=risk_mod, n=40, util_fun=util_risk_sd, risk_df=risk_mod)
 
 # Space-filling strategy----------------------------------------------------------
 # spread out samples over time, with pairs a given dist. away---------------------
@@ -130,25 +113,29 @@ banned_pairs <- sp_unvis_loc |>
     filter(st_distance(geometry.x, geometry.y, by_element=TRUE) < min_dist) |> 
     transmute(s1=site.x, s2=site.y)
 
-u_spacefill <- map_dfr(num_loc[-1], ~{
-    print(paste0("num_loc=", .x))
-    dsfill <- get_design_spacefill(sp_unvis_loc$site, unique(pred_mod$date), .x, banned_pairs)
-    mutate(utility(dsfill, obs_mod, n=n, pred_df=pred_mod), num_loc=.x)
-})
-
-saveRDS(u_spacefill, "util-results/util-spacefill-5.rds")
+for (r in 2:5) {
+    u_sfill_rep <- map_dfr(num_loc[-1], ~{
+        print(paste0("num_loc=", .x))
+        dsfill <- get_design_spacefill(sp_unvis_loc$site, unique(pred_mod$date), .x, banned_pairs)
+        tibble_row(
+            !!!utility(dsfill, obs_mod, n=n, pred_df=pred_mod, util_fun=util_risk_sd, risk_df=risk_mod),
+            num_loc=.x
+        )
+    })
+    
+    saveRDS(u_sfill_rep, paste0("util-results/risk-sd/util-spacefill-", r, ".rds"))
+}
 
 ## load all spacefill results, pick best and save
-
-u_spacefill <- map_dfr(1:5, ~readRDS(paste0("util-results/util-spacefill-", .x, ".rds")))
+u_spacefill <- map_dfr(1:5, ~readRDS(paste0("util-results/risk-sd/util-spacefill-", .x, ".rds")))
 
 u_spacefill <- u_spacefill |> 
     filter(num_loc > 1) |> 
     group_by(num_loc) |> 
-    slice_max(dopt, n=1) |> 
+    slice_max(risk_sd, n=1) |> 
     ungroup()
 
-saveRDS(u_spacefill, "util-results/util-spacefill.rds")
+saveRDS(u_spacefill, "util-results/risk-sd/util-spacefill.rds")
 
 # Local utility stuff-------------------------------------------------------------
 
@@ -269,7 +256,7 @@ distinct(tmp, across(land_cover:mean_rh))
 # "One-off" design strategies-----------------------------------------------------
 
 ## 1. Utility with no additional sampling
-u_none <- util_rep(obs_mod, sel_list_inla(obs_mod))
+u_none <- util_risk_sd(obs_mod, risk_mod)
 
 ## 2-3. Visit all 30 parks again in December/June
 
@@ -277,18 +264,18 @@ d_parks_dec <- obs_mod |>
     distinct(site) |> 
     mutate(date=as.Date("2023-12-01"))
     
-u_parks_dec <- utility(d_parks_dec, obs_mod, n=n, pred_df=pred_mod)
+u_parks_dec <- utility(d_parks_dec, obs_mod, n=n, pred_df=pred_mod, util_fun=util_risk_sd, risk_df=risk_mod)
 
 d_parks_jun <- obs_mod |> 
     distinct(site) |> 
     mutate(date=as.Date("2023-06-01"))
 
-u_parks_jun <- utility(d_parks_jun, obs_mod, n=n, pred_df=pred_mod)
+u_parks_jun <- utility(d_parks_jun, obs_mod, n=n, pred_df=pred_mod, util_fun=util_risk_sd, risk_df=risk_mod)
 
 ## 4. Reuse the same schedule from 2021
 d_resamp <- filter(obs_mod, lubridate::year(date) == 2021)
 d_resamp$pres <- NA
-u_resamp <- utility(d_resamp, obs_mod, n=n)
+u_resamp <- utility(d_resamp, obs_mod, n=n, util_fun=util_risk_sd, risk_df=risk_mod)
 
 u_one_offs <- tibble(
     strat=c("    None (0)", "    Revisit in\n    June (30)", "    Revisit in\n    December (30)", "    Repeat 2021\n    schedule (111)"), 
