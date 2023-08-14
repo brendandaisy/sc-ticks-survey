@@ -7,6 +7,8 @@ library(sf)
 # library(DiceOptim)
 library(fields)
 library(caret)
+library(ggfortify)
+library(cowplot)
 
 source("other-helpers.R")
 source("utility-helpers.R")
@@ -31,7 +33,7 @@ pred_mod <- df_list$pred
 risk_mod <- df_list$risk_grid
 
 num_loc <- c(1, seq(5, 20, 5))
-n <- 40
+n <- 50
 
 # Select sites with largest average variance among species,-----------------------
 # only choosing a site one time---------------------------------------------------
@@ -55,20 +57,6 @@ u_simple_var <- map_dfr(num_loc, ~{
 })
 
 saveRDS(u_simple_var, "util-results/risk-sd/util-simple-var.rds")
-
-dtmp <- risk_mod |> 
-    distinct(date, site) |> 
-    slice_sample(n=10)
-
-all_data
-
-dtmp <- pred_mod |> 
-    filter(str_detect(land_cover, "Developed")) |> 
-    group_by(date, site) |> 
-    slice_sample(n=10) |> 
-    ungroup()
-
-tmp <- utility(dtmp, obs_mod, pred_df=risk_mod, n=40, util_fun=util_risk_sd, risk_df=risk_mod)
 
 # Space-filling strategy----------------------------------------------------------
 # spread out samples over time, with pairs a given dist. away---------------------
@@ -280,10 +268,12 @@ u_resamp <- utility(d_resamp, obs_mod, n=n, util_fun=util_risk_sd, risk_df=risk_
 u_one_offs <- tibble(
     strat=c("    None (0)", "    Revisit in\n    June (30)", "    Revisit in\n    December (30)", "    Repeat 2021\n    schedule (111)"), 
     design=list(tibble(), distinct(d_parks_jun, date, site), distinct(d_parks_dec, date, site), distinct(d_resamp, date, site)),
-    utility=c(u_none[1], u_parks_jun$dopt, u_parks_dec$dopt, u_resamp$dopt)
+    utility=c(u_none[1], u_parks_jun$risk_sd, u_parks_dec$risk_sd, u_resamp$risk_sd)
 )
 
-saveRDS(u_one_offs, "util-results/util-one-offs.rds")
+# saveRDS(u_one_offs, "util-results/risk-sd/util-one-offs.rds")
+ofs_dopt <- readRDS("util-results/util-one-offs.rds")
+ofs_rsd <- readRDS("util-results/risk-sd/util-one-offs.rds")
 
 # Bayesian optimization-----------------------------------------------------------
 
@@ -395,79 +385,144 @@ utils0 |>
 
 # Plot the results comparing all strategies---------------------------------------
 
-strats <- c("util-random", "util-simple-var", "util-spacefill", "util-sim-ann")
-names(strats) <- c("Random", "Variance", "Space-filling", "Simulated Annealing")
+strats <- c("util-random", "util-simple-var", "util-spacefill", "util-sim-ann", "util-coord-ex")
+names(strats) <- c("Random", "Variance", "Space-filling", "Simulated Annealing", "Exchange")
 
-u_res <- strats |> 
+res_dopt <- strats |> 
     map_dfr(~mutate(readRDS(paste0("util-results/", .x, ".rds")), strat=.x)) |> 
-    mutate(strat=fct_recode(strat, !!!strats)) |> 
-    mutate(strat=fct_relevel(strat, "Variance"))
+    rename(utility=dopt) |> 
+    filter(num_loc > 1) |> 
+    mutate(strat=fct_relevel(fct_recode(strat, !!!strats), "Variance", after=Inf))
 
-u_res_random <- filter(u_res, strat == "Random")
+res_dopt_random <- filter(res_dopt, strat == "Random")
 
-u_res <- u_res_random |> 
-    filter(num_loc == 1) |> 
-    slice_max(dopt, n=1) |> 
-    select(-strat) |> 
-    bind_cols(strat=as.factor(c("Space-filling", "Simulated Annealing"))) |> 
-    bind_rows(u_res)
+res_rsd <- strats |> 
+    map_dfr(~mutate(readRDS(paste0("util-results/risk-sd/", .x, ".rds")), strat=.x)) |> 
+    rename(utility=risk_sd) |> 
+    filter(num_loc > 1) |> 
+    mutate(strat=fct_relevel(fct_recode(strat, !!!strats), "Variance", after=Inf))
 
-u_rand_mean <- u_res_random |> 
-    group_by(num_loc) |> 
-    summarise(mean=mean(dopt))
+res_rsd_random <- filter(res_rsd, strat == "Random")
 
 hline_col <- c("#3c4276", "#3798a9", "#7fd7b8", "#98d180")
     
-gg <- ggplot(u_res_random, aes(factor(num_loc), dopt)) +
-    geom_hline(yintercept=u_one_offs$utility, col=hline_col, alpha=0.65, linewidth=1, linetype="dashed") +
+gg <- ggplot(res_dopt_random, aes(factor(num_loc), utility)) +
+    geom_hline(yintercept=ofs_dopt$utility, col=hline_col, alpha=0.65, linewidth=1, linetype="dashed") +
     geom_violin(fill="#9ac9e7", col="gray70", alpha=0.75)  +
     geom_point(size=0.84, col="#9ac9e7") +
     coord_cartesian(clip="off") +
-    annotate(
-        "text",
-        label=u_one_offs$strat,
-        y=u_one_offs$utility + c(0, -0.05, 0.05, 0),
-        col=hline_col, x=5.45, hjust="left", size=3
-    ) +
-    labs(x="Number of new visits", y="Utility", col="Search strategy") +
+    # annotate(
+    #     "text",
+    #     label=ofs_rsd$strat,
+    #     # y=u_one_offs$utility + c(0, -0.06, 0.06, 0),
+    #     y=ofs_rsd$utility + c(0, 0.002, -0.002, 0),
+    #     col=hline_col, x=4.45, hjust="left", size=3
+    # ) +
+    labs(x=NULL, y=NULL, col="Search strategy") +
     theme_bw() +
-    theme(
-        plot.margin=unit(c(t=0.3, r=1, b=0, l=0), "in"), 
-        # axis.title=element_text(size=rel(1.1)),
-        # axis.text=element_text(size=rel(1.1))
-    )
+    theme(plot.margin=unit(c(t=0.1, r=0.1, b=0.1, l=0), "in"))
 
-plot_oneoffs <- function(i) {
-    gg2 <- gg +
-        geom_hline(yintercept=u_one_offs$utility[1:i], col=hline_col[1:i], alpha=0.65, linewidth=1, linetype="dashed") +
-        annotate(
-            "text", 
-            label=u_one_offs$strat[1:i], 
-            # y=u_one_offs$utility[1:i] + c(-0.2, -0.63, 0.63, 0)[1:i], 
-            y=u_one_offs$utility[1:i], 
-            col=hline_col[1:i], x=5.5, hjust="left", size=3
-        )
-    
-    ggsave(paste0("figs/util-results2", letters[i], ".pdf"), width=4.8, height=4)
-}
-# gg2 <- plot_oneoffs(4)
-
-plot_searches <- function(vars) {
+plot_searches <- function(gg, u_res, vars) {
     u_sub <- filter(u_res, strat != "Random", strat %in% vars) |> 
         mutate(strat=fct_rev(strat))
     
     gg +
         geom_line(aes(col=strat, group=strat), u_sub) +
-        geom_point(aes(col=strat), u_sub, size=0.9) +
-        scale_color_manual(values=c("#f5b43d", "#ff856d", "#c63df5")[seq_along(vars)]) +
-        theme(legend.position="top", plot.margin=unit(c(t=0, r=1, b=0, l=0), "in"))
+        geom_point(aes(col=strat, shape=strat, fill=strat), u_sub, size=1.1, show.legend=FALSE) +
+        scale_color_manual(values=c("#f5b43d", "#ff856d", "#c63df5", "#f53dbc")[seq_along(vars)]) +
+        scale_fill_manual(values=c("#f5b43d", "#ff856d", "#c63df5", "#f53dbc")[seq_along(vars)]) +
+        scale_shape_manual(values=21:24, guide="none") +
+        guides(color=guide_legend(title.position="top")) +
+        theme(legend.position="none")
 }
 
-gg3 <- plot_searches(c("Variance", "Space-filling", "Simulated Annealing"))
-ggsave("figs/util-results.pdf", gg3, width=5.2, height=4.3)
+gg_dopt <- plot_searches(gg, res_dopt, names(strats))
+gg_risk_sd <- plot_searches(gg, res_rsd, names(strats))
+legend <- get_legend(gg_dopt + theme(legend.position="top", legend.justification="left"))
+
+plot_grid(
+    legend,
+    plot_grid(gg_dopt, NULL, gg_risk_sd, rel_widths=c(1, 0.05, 1.37), nrow=1),
+    # plot_grid(NULL, legend, rel_widths=c(0.2, 1)),
+    nrow=2, rel_heights=c(0.15, 1)
+)
+
+ggsave("figs/util-results.pdf", width=6.2, height=3.8)
+
+# Visualizing designs using dimension reduction-----------------------------------
+library(FactoMineR)
+library(factoextra)
+
+famd_searches <- function(res, covars, num_loc=10) {
+    covar_search <- res |> 
+        filter(strat != "Random", !!num_loc == num_loc) |> 
+        unnest(cols=c(design)) |> 
+        mutate(month=ifelse(is.na(month), lubridate::month(date), month)) |> 
+        left_join(covars, by=c("site", "month"))
+    
+    pcres <- FAMD(select(covars, land_cover:mean_rh), graph=FALSE)
+    list(
+        res=pcres,
+        obs=predict(pcres, obs_mod)$coord |> as_tibble() |> mutate(strat="Initial Data"),
+        search=predict(pcres, covar_search)$coord |> as_tibble() |> mutate(strat=covar_search$strat)
+    )
+}
+
+plot_famd_searches <- function(famd) {
+    fviz_famd_ind(famd$res, label="none", col.quali.var="white", col.ind="gray60", alpha.ind=0.7, shape.ind=1, pointsize=0.75) +
+        geom_point(aes(`Dim 1`, `Dim 2`), data=famd$obs, col="gray60", alpha=0.7, size=0.75) +
+        geom_point(aes(`Dim 1`, `Dim 2`, fill=fct_rev(strat), shape=strat), data=famd$search, size=1.7, col="white") +
+        scale_fill_manual(values=c("#f5b43d", "#ff856d", "#c63df5", "#f53dbc"), guide="none") +
+        scale_shape_manual(values=21:24, guide="none") +
+        coord_cartesian(clip="off") +
+        labs(title=NULL) +
+        theme_bw() +
+        theme(plot.margin=unit(c(t=0, r=0, b=0, l=0), "in"))
+}
+
+covars <- pred_mod |> 
+    select(date, month, site, land_cover:mean_rh) |> 
+    distinct()
+
+famd1 <- famd_searches(res_dopt, covars)
+famd2 <- famd_searches(res_rsd, covars)
+
+plot_famd_searches(famd1)
+ggsave("figs/figure 4/famd-dopt.pdf", width=3, height=3)
+
+plot_grid(
+    plot_famd_searches(famd1),
+    plot_famd_searches(famd2) + theme(axis.title.y=element_blank(), plot.margin=unit(c(t=0, r=0, b=0, l=0.3), "in")),
+    nrow=1, labels=c("A", "B")
+)
+ggsave("figs/supp/fig-S2.pdf", width=6, height=3)
+
+# Exploring other aspects of repeated sites, visits, etc--------------------------
+dopt_unnest <- res_dopt |>
+    filter(!(strat %in% c("Random", "Variance")), num_loc == 20) |> 
+    unnest(cols=c(design)) |> 
+    # mutate(month=lubridate::month(ifelse(is.na(month), lubridate::month(date), month), label=TRUE)) |> 
+    mutate(month=ifelse(is.na(month), lubridate::month(date), month)) |> 
+    left_join(pred_mod, by=c("site", "month"), multiple="first")
+
+# most sampled land cover classes
+risk_mod |> 
+    count(land_cover, sort=TRUE) |> 
+    mutate(n=n/sum(n))
+
+ggplot(dopt_unnest, aes(month, fill=fct_rev(strat))) +
+    # geom_point(position=position_dodge2(width=0.5), size=1.3) +
+    geom_bar(position=position_dodge2(preserve="single", padding=0.2)) +
+    scale_fill_manual(values=c("#ff856d", "#c63df5", "#f53dbc"), guide="none") +
+    scale_y_continuous(breaks=0:5) +
+    scale_x_discrete(guide=guide_axis(angle=45)) +
+    labs(x=NULL, y="Count") +
+    theme_bw() +
+    theme(panel.grid.minor=element_blank())
+
+ggsave("figs/figure 4/timepoints-dopt.pdf", width=3, height=1.4)
 
 ###
-
 all_loc_sp <- read_sf("data-proc/parks-design-space.shp") |> 
     distinct(site, geometry)
 

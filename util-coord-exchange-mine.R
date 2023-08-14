@@ -3,6 +3,7 @@ library(purrr)
 library(tidyverse)
 library(sf)
 library(furrr)
+library(nngeo)
 
 source("other-helpers.R")
 source("utility-helpers.R")
@@ -34,8 +35,18 @@ coordinate_exchange <- function(
         for (i in 1:num_loc) { # for each visit in current design
             d_prop <- d_curr # reset d_prop if last site from visit i-1 rejected
             m_curr <- d_curr$month[i]  
-            for (m in (m_curr+1):12) { # cycle through dates until utility is not improved
+            for (m in 1:11) { # cycle through dates until utility is not improved
                 d_prop$month[i] <- if ((m_curr + m) == 12) 12 else (m_curr + m) %% 12
+                u_prop <- util_fun(bind_rows(d_prop, d_so_far))
+                iter <- iter + 1
+                if (u_prop < u_curr)
+                    break
+                d_curr <- d_prop
+                u_curr <- u_prop
+                changed <- TRUE
+            }
+            for (m in 1:11) { # cycle backwards through dates until utility is not improved
+                d_prop$month[i] <- if ((m_curr - m) == 0) 12 else (m_curr - m) %% 12
                 u_prop <- util_fun(bind_rows(d_prop, d_so_far))
                 iter <- iter + 1
                 if (u_prop < u_curr)
@@ -49,8 +60,6 @@ coordinate_exchange <- function(
             for (nn in nn_list[[s_curr]]) {
                 d_prop$site[i] <- nn
                 u_prop <- util_fun(bind_rows(d_prop, d_so_far))
-                print(d_prop)
-                print(u_prop)
                 iter <- iter + 1
                 if (u_prop > u_curr) {
                     d_curr <- d_prop
@@ -71,40 +80,33 @@ coordinate_exchange <- function(
 }
 
 # Data preparation----------------------------------------------------------------
-df_list <- readRDS("data-proc/bo-dopt-dfs.rds")
+df_list <- readRDS("data-proc/bo-risk-sd-dfs.rds")
 obs_mod <- df_list$obs
 pred_mod <- df_list$pred
-# risk_mod <- df_list$risk_grid
+risk_mod <- df_list$risk_grid
 
-n_est <- 10
-n <- 50
+all_loc_sp <- read_sf("data-proc/parks-design-space.shp") |> 
+    distinct(site, geometry)
+
+nn_list <- nearest_neighbors(all_loc_sp, 4)
+
+n_est <- 45
+n <- 45
 
 util_fun <- function(d) {
-    utility(d, obs_mod, n=30, by=c("month", "site"), pred_df=pred_mod, u_only=TRUE, sel=sel_list_inla(obs_mod))
+    utility(d, obs_mod, n=n_est, by=c("month", "site"), pred_df=pred_mod, u_only=TRUE, util_fun=util_risk_sd, risk_df=risk_mod)
 }
 
-d_so_far <- tibble()
-nn_list <- nearest_neighbors(all_loc_sp, 2)
-coordinate_exchange(util_fun, pred_mod, 5, nn_list, max_iter=25, verbose=FALSE)
-for (i in 1:2) {
-    sa_res <- simulated_annealing(pred_mod, obs_mod, 5, iter=100, alpha=1.3, T0=0.02, n_est=n_est, d_so_far=d_so_far, info_iter=5, restart=50)
-    d_so_far <- sa_res$d
-    u_res <- utility(sa_res$d, obs_mod, n=n, pred_df=pred_mod, util_fun=util_risk_sd, risk_df=risk_mod)
-    res <- tibble_row(!!!u_res, num_loc=nrow(d_so_far))
-    saveRDS(res, paste0("util-results/risk-sd/sim-ann3-", i, ".rds"))
-}
-# d_init <- res$design
-# for (i in 3) {
-#     sa_res <- simulated_annealing(pred_mod, obs_mod, 15, iter=20, alpha=1.7, T0=0.01, n_est=n_est, d_init=d_init[[i]], info_iter=5)
-#     d_so_far <- sa_res$d
-#     u_res <- utility(sa_res$d, obs_mod, n=n, pred_df=pred_mod, util_fun=util_risk_sd, risk_df=risk_mod)
-#     res <- tibble_row(!!!u_res, num_loc=nrow(d_so_far))
-#     saveRDS(res, paste0("util-results/util-sim-ann-alpha1pt5-T0pt2-mod-", i, ".rds"))
-# }
+# d_so_far <- readRDS("util-results/coord-ex-2.rds")$design[[1]]
+d_so_far <- ce_res2$d
+ce_res3 <- coordinate_exchange(util_fun, pred_mod, 5, nn_list, max_iter=100, d_so_far=d_so_far, verbose=TRUE)
 
-res <- map_dfr(1:2, ~{
-    res_d <- readRDS(paste0("util-results/risk-sd/sim-ann2-", .x, ".rds"))
+res <- tibble_row(risk_sd=ce_res$u_approx, design=list(ce_res$d), num_loc=nrow(ce_res$d))
+saveRDS(res, "util-results/risk-sd/coord-ex-4.rds")
+
+res <- map_dfr(1:4, ~{
+    res_d <- readRDS(paste0("util-results/risk-sd/coord-ex-", .x, ".rds"))
     res_d
 })
 
-saveRDS(res, "util-results/util-sim-ann.rds")
+saveRDS(res, "util-results/risk-sd/util-coord-ex.rds")

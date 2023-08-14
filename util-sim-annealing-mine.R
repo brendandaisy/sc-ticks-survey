@@ -88,8 +88,18 @@ obs_mod <- df_list$obs
 pred_mod <- df_list$pred
 risk_mod <- df_list$risk_grid
 
-n_est <- 40
+n_est <- 50
 n <- 50
+
+# for adding some more iters:
+d_so_far <- res$design[[3]]
+d_init <- res$design[[4]][1:5,]
+sa_res <- simulated_annealing(
+    pred_mod, obs_mod, 5, iter=50, weight_by=NULL,
+    alpha=1.3, T0=0.01, n_est=n_est, d_so_far=d_so_far, info_iter=5, d_init=d_init
+)
+res <- tibble_row(risk_sd=sa_res$u_approx, design=list(sa_res$d), num_loc=nrow(sa_res$d))
+saveRDS(res, "util-results/risk-sd/sim-ann-4.rds")
 
 d_so_far <- tibble()
 for (i in 1:2) {
@@ -108,9 +118,9 @@ for (i in 1:2) {
 #     saveRDS(res, paste0("util-results/util-sim-ann-alpha1pt5-T0pt2-mod-", i, ".rds"))
 # }
 
-res <- map_dfr(1:2, ~{
-    res_d <- readRDS(paste0("util-results/risk-sd/sim-ann2-", .x, ".rds"))
+res <- map_dfr(1:4, ~{
+    res_d <- readRDS(paste0("util-results/risk-sd/sim-ann-", .x, ".rds"))
     res_d
 })
  
-saveRDS(res, "util-results/util-sim-ann.rds")
+saveRDS(res, "util-results/risk-sd/util-sim-ann.rds")

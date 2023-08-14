@@ -52,8 +52,8 @@ names(fx_terms) <- parks_obs |>
 # prior choices:
 # prec for fixed effect = 0.2 -> an increase in 1 std. dev. has 95% chance of causing a 99% change in risk (each covar has sufficient chance to entirely describe risk)
 # prec for random effects AND splines = Gamma(1, 0.1) -> going for more precision than for linear fixed effects, since RWs have so much room to move around per step. A change in "unit" has 2% chance of prec < 0.2
-prec_pri <- list(prec=list(prior="loggamma", param=c(1, 1)))
-prec_pri_str <- "list(prec=list(prior='loggamma', param=c(1, 1)))" # this one is for get_fx
+prec_pri <- list(prec=list(prior="loggamma", param=c(1, 0.1)))
+prec_pri_str <- "list(prec=list(prior='loggamma', param=c(1, 0.1)))" # this one is for get_fx
 
 fx_models <- list(
     slope=get_formula(fx_terms),
