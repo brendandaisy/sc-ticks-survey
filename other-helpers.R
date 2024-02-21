@@ -129,7 +129,7 @@ formula_jsdm <- function(df, rx=~.) {
     update(ret, rx)
 }
 
-# the (current...) preferred model for performing BED
+# the preferred model for performing BED
 formula_bed <- function(...) {
     prec_pri <- list(prec=list(prior="loggamma", param=c(1, 0.1)))
 
@@ -165,6 +165,9 @@ fx_labels <- function(fx) {
         fct_relevel("Dermacentor variabilis", "Ixodes spp.", "Amblyomma americanum", after=Inf) |> 
         fct_relevel("tree_canopy", "elevation", "jan_min_temp", "max_temp", "precipitation", "mean_rh", after=0) |> 
         fct_recode(
+            "Intercept, D. variabilis"="Dermacentor variabilis", 
+            "Intercept, Ixodes spp."="Ixodes spp.", 
+            "Intercept, A. americanum"="Amblyomma americanum",
             "Tree canopy"="tree_canopy", 
             "Elevation"="elevation", 
             "Jan. min. temperature"="jan_min_temp", 

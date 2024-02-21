@@ -324,7 +324,7 @@ needed. The following steps are taken preparing the data for model fitting:
 - For each visitation event (i.e. `site` and `date` pair), implicit zero counts are converted to explicit zero counts for each group. Note this should also remove the issue that "zero-count" visits were entered inconsistently (some had different genus/species combinations entered but with 0, some were `NA`, etc.)
 
 ```{r }
-parks_agg <- parks |> 
+parks_agg <- parks_tidy |> 
     select(date, site, genus:count, sampling_method, lat, long) |> 
     mutate(month=month(date), year=year(date)) |> 
     group_by(date, site, genus, species, life_stage, month, year, lat, long) |> # sum over factors not considered 

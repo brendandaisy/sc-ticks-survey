@@ -258,7 +258,7 @@ pt_adj <- rep(0, nrow(d_points))
 pt_adj[c(1, 2, 6, 7, 5, 11, 16, 8, 13, 15)] <- c(rep(c(-.08, .08), 2), rep(c(-.14, 0, .14), 2))
 
 ggplot(design_space, aes(s1, s2, fill=x)) +
-    geom_tile(col="gray70", linewidth=0.5) +
+    geom_tile(col="gray70", linewidth=0.5, alpha=0.8) +
     geom_point(
         aes(s1, s2, col=fct_relevel(strat, "init", "cand")), d_points,
         size=1.6, position=position_nudge(x=pt_adj), inherit.aes=FALSE
@@ -270,6 +270,7 @@ ggplot(design_space, aes(s1, s2, fill=x)) +
     facet_wrap(~t, nrow=1) +
     scale_x_discrete(expand=expansion()) +
     scale_y_discrete(expand=expansion()) +
+    scale_fill_gradient2(low="#0c2c84", mid="gray80", high="#7fcdbb") +
     # scale_fill_viridis_c(option="mako") +
     # scale_fill_distiller(palette="Greens") +
     scale_color_manual(values=c("#ff856d", "#c63df5", "#f5b43d"), guide="none") +

@@ -15,17 +15,6 @@ source("utility-helpers.R")
 
 inla.setOption(inla.mode="classic")
 
-# Add columns for data points in normalized design space, $(X, Y, t) \in [0, 1]^3$
-# Used for Bayesian Optimization
-sp_add_norm <- function(df) {
-    ret <- df |> 
-        st_normalize()
-    
-    ret |> 
-        st_drop_geometry() |> 
-        mutate(X=st_coordinates(ret)[,1], Y=st_coordinates(ret)[,2], t=(month-3) / 9, .before=tick_class)
-}
-
 # Data preparation----------------------------------------------------------------
 df_list <- readRDS("data-proc/bo-risk-sd-dfs.rds")
 obs_mod <- df_list$obs
@@ -411,16 +400,16 @@ gg <- ggplot(res_dopt_random, aes(factor(num_loc), utility)) +
     geom_violin(fill="#9ac9e7", col="gray70", alpha=0.75)  +
     geom_point(size=0.84, col="#9ac9e7") +
     coord_cartesian(clip="off") +
-    # annotate(
-    #     "text",
-    #     label=ofs_rsd$strat,
-    #     # y=u_one_offs$utility + c(0, -0.06, 0.06, 0),
-    #     y=ofs_rsd$utility + c(0, 0.002, -0.002, 0),
-    #     col=hline_col, x=4.45, hjust="left", size=3
-    # ) +
-    labs(x=NULL, y=NULL, col="Search strategy") +
+    annotate(
+        "text",
+        label=ofs_rsd$strat,
+        y=ofs_dopt$utility + c(0, -0.06, 0.06, 0),
+        # y=ofs_rsd$utility + c(0, 0.002, -0.002, 0),
+        col=hline_col, x=4.45, hjust="left", size=3
+    ) +
+    labs(x="Number of locations", y="Utility", col="Search strategy") +
     theme_bw() +
-    theme(plot.margin=unit(c(t=0.1, r=0.1, b=0.1, l=0), "in"))
+    theme(plot.margin=unit(c(t=0.1, r=1, b=0.1, l=0), "in"))
 
 plot_searches <- function(gg, u_res, vars) {
     u_sub <- filter(u_res, strat != "Random", strat %in% vars) |> 
@@ -436,13 +425,14 @@ plot_searches <- function(gg, u_res, vars) {
         theme(legend.position="none")
 }
 
-gg_dopt <- plot_searches(gg, res_dopt, names(strats))
+gg_dopt <- plot_searches(gg, res_dopt, c("Variance", "Space-filling", "Simulated Annealing", "Exchange"))
 gg_risk_sd <- plot_searches(gg, res_rsd, names(strats))
 legend <- get_legend(gg_dopt + theme(legend.position="top", legend.justification="left"))
 
 plot_grid(
     legend,
-    plot_grid(gg_dopt, NULL, gg_risk_sd, rel_widths=c(1, 0.05, 1.37), nrow=1),
+    plot_grid(gg_dopt, NULL, rel_widths=c(1, 0.3)),
+    # plot_grid(gg_dopt, NULL, gg_risk_sd, rel_widths=c(1, 0.05, 1.37), nrow=1),
     # plot_grid(NULL, legend, rel_widths=c(0.2, 1)),
     nrow=2, rel_heights=c(0.15, 1)
 )
@@ -468,16 +458,16 @@ famd_searches <- function(res, covars, num_loc=10) {
     )
 }
 
-plot_famd_searches <- function(famd) {
-    fviz_famd_ind(famd$res, label="none", col.quali.var="white", col.ind="gray60", alpha.ind=0.7, shape.ind=1, pointsize=0.75) +
-        geom_point(aes(`Dim 1`, `Dim 2`), data=famd$obs, col="gray60", alpha=0.7, size=0.75) +
-        geom_point(aes(`Dim 1`, `Dim 2`, fill=fct_rev(strat), shape=strat), data=famd$search, size=1.7, col="white") +
+plot_famd_searches <- function(famd, d1, d2, axes=c(1, 2)) {
+    fviz_famd_ind(famd$res, axes=axes, label="none", col.quali.var="white", col.ind="gray60", alpha.ind=0.7, shape.ind=1, pointsize=0.75) +
+        geom_point(aes({{d1}}, {{d2}}), data=famd$obs, col="gray60", alpha=0.7, size=0.75) +
+        geom_point(aes({{d1}}, {{d2}}, fill=fct_rev(strat), shape=fct_rev(strat)), data=famd$search, size=1.7, col="white") +
         scale_fill_manual(values=c("#f5b43d", "#ff856d", "#c63df5", "#f53dbc"), guide="none") +
         scale_shape_manual(values=21:24, guide="none") +
         coord_cartesian(clip="off") +
         labs(title=NULL) +
         theme_bw() +
-        theme(plot.margin=unit(c(t=0, r=0, b=0, l=0), "in"))
+        theme(plot.margin=unit(c(t=0, r=0, b=0.1, l=0.1), "in"))
 }
 
 covars <- pred_mod |> 
@@ -487,15 +477,22 @@ covars <- pred_mod |>
 famd1 <- famd_searches(res_dopt, covars)
 famd2 <- famd_searches(res_rsd, covars)
 
-plot_famd_searches(famd1)
+plot_grid()
+plot_famd_searches(famd1, `Dim 1`, `Dim 2`)
 ggsave("figs/figure 4/famd-dopt.pdf", width=3, height=3)
 
-plot_grid(
-    plot_famd_searches(famd1),
-    plot_famd_searches(famd2) + theme(axis.title.y=element_blank(), plot.margin=unit(c(t=0, r=0, b=0, l=0.3), "in")),
-    nrow=1, labels=c("A", "B")
+famd_grid <- plot_grid(
+    plot_famd_searches(famd1, `Dim 1`, `Dim 2`) + labs(title="1st design criterion"),
+    plot_famd_searches(famd2, `Dim 1`, `Dim 2`) + labs(title="2nd design criterion"),
+    plot_famd_searches(famd1, `Dim 3`, `Dim 4`, c(3, 4)),
+    plot_famd_searches(famd2, `Dim 3`, `Dim 4`, c(3, 4)),
+    # plot_famd_searches(famd2) + theme(axis.title.y=element_blank(), plot.margin=unit(c(t=0, r=0, b=0, l=0.3), "in")),
+    nrow=2, labels="AUTO"
 )
-ggsave("figs/supp/fig-S2.pdf", width=6, height=3)
+
+plot_grid(legend, famd_grid, nrow=2, rel_heights=c(0.15, 1))
+
+ggsave("figs/supp/util-res-famd.pdf", width=5.75, height=6.2)
 
 # Exploring other aspects of repeated sites, visits, etc--------------------------
 dopt_unnest <- res_dopt |>
@@ -503,58 +500,103 @@ dopt_unnest <- res_dopt |>
     unnest(cols=c(design)) |> 
     # mutate(month=lubridate::month(ifelse(is.na(month), lubridate::month(date), month), label=TRUE)) |> 
     mutate(month=ifelse(is.na(month), lubridate::month(date), month)) |> 
-    left_join(pred_mod, by=c("site", "month"), multiple="first")
+    left_join(pred_mod, by=c("site", "month"), multiple="first") |> 
+    mutate(month=month(month, label=TRUE, abbr=FALSE))
 
-# most sampled land cover classes
-risk_mod |> 
-    count(land_cover, sort=TRUE) |> 
-    mutate(n=n/sum(n))
+rsd_unnest <- res_rsd |>
+    filter(!(strat %in% c("Random", "Variance")), num_loc == 20) |> 
+    unnest(cols=c(design)) |> 
+    # mutate(month=lubridate::month(ifelse(is.na(month), lubridate::month(date), month), label=TRUE)) |> 
+    mutate(month=ifelse(is.na(month), lubridate::month(date), month)) |> 
+    left_join(pred_mod, by=c("site", "month"), multiple="first") |> 
+    mutate(month=month(month, label=TRUE, abbr=FALSE))
 
-ggplot(dopt_unnest, aes(month, fill=fct_rev(strat))) +
-    # geom_point(position=position_dodge2(width=0.5), size=1.3) +
-    geom_bar(position=position_dodge2(preserve="single", padding=0.2)) +
-    scale_fill_manual(values=c("#ff856d", "#c63df5", "#f53dbc"), guide="none") +
-    scale_y_continuous(breaks=0:5) +
-    scale_x_discrete(guide=guide_axis(angle=45)) +
-    labs(x=NULL, y="Count") +
-    theme_bw() +
-    theme(panel.grid.minor=element_blank())
+# some common environmental conditions?
 
-ggsave("figs/figure 4/timepoints-dopt.pdf", width=3, height=1.4)
 
-###
+# save a CSV of the best search strategies
 all_loc_sp <- read_sf("data-proc/parks-design-space.shp") |> 
     distinct(site, geometry)
 
-plot_design_map <- function(d, col) {
-    d_sp <- inner_join(all_loc_sp, d, multiple="all") |> 
-        mutate(month=lubridate::month(date, label=TRUE, abbr=TRUE))
-    
-    ggplot(d_sp) +
-        geom_sf(data=sc_state, fill=NA, col="gray70", linewidth=0.7, alpha=0.9) +
-        geom_sf(col=col, alpha=0.8, size=1.1) +
-        # geom_sf_text(aes(label=site), col=col, alpha=0.8, size=1.6, nudge_y=-0.2, nudge_x=0.2) +
-        facet_wrap(~month, drop=FALSE, nrow=2) +
-        map_theme
-}
+best_res <- bind_rows(
+    mutate(slice_max(dopt_unnest, utility), criterion="first"),
+    mutate(slice_max(rsd_unnest, utility), criterion="second")
+) |> 
+    select(site, month, num_loc, strat, criterion, utility)
+
+inner_join(all_loc_sp, best_res, multiple="all") |> 
+    arrange(criterion, month) %>%
+    mutate(long=st_coordinates(.)[,1], lat=st_coordinates(.)[,2]) |> 
+    st_drop_geometry() |> 
+    write_csv("ttbd-submission/data-files/best-designs.csv")
+
+# most sampled land cover classes
+# risk_mod |> 
+#     count(land_cover, sort=TRUE) |> 
+#     mutate(n=n/sum(n))
+# 
+# ggplot(dopt_unnest, aes(month, fill=fct_rev(strat))) +
+#     # geom_point(position=position_dodge2(width=0.5), size=1.3) +
+#     geom_bar(position=position_dodge2(preserve="single", padding=0.2)) +
+#     scale_fill_manual(values=c("#ff856d", "#c63df5", "#f53dbc"), guide="none") +
+#     scale_y_continuous(breaks=0:5) +
+#     scale_x_discrete(guide=guide_axis(angle=45)) +
+#     labs(x=NULL, y="Count") +
+#     theme_bw() +
+#     theme(panel.grid.minor=element_blank())
+# 
+# ggsave("figs/figure 4/timepoints-dopt.pdf", width=3, height=1.4)
+
+###
+
+
+# dopt_best <- slice_max(res_dopt, utility, n=1) |> 
+#     unnest(design) |> 
+#     mutate(month=lubridate::month(month, label=TRUE, abbr=FALSE))
+# 
+# rsd_best <- slice_max(res_rsd, utility, n=1) |> 
+#     unnest(design) |> 
+#     mutate(month=lubridate::month(date, label=TRUE, abbr=FALSE))
+
+init_visits <- read_parks_sf(drop=min_temp) |> 
+    prep_parks_model_data(rescale=FALSE) |> 
+    mutate(month=lubridate::month(month, label=TRUE, abbr=FALSE)) |> 
+    distinct(date, site, month, geometry)
+
+dopt_sp <- inner_join(all_loc_sp, dopt_unnest, multiple="all", copy=TRUE) |> 
+    # mutate(strat=factor(strat, labels=c("1st design criterion", "2nd design criterion"))) |> 
+    st_jitter(factor=0.02)
+
+rsd_sp <- inner_join(all_loc_sp, rsd_unnest, multiple="all", copy=TRUE) |> 
+    # mutate(strat=factor(strat, labels=c("1st design criterion", "2nd design criterion"))) |> 
+    st_jitter(factor=0.02)
 
 sc_state <- st_read("geo-files/south-carolina-county-boundaries.shp") |> 
     st_transform(st_crs(parks_obs)) |> 
     st_union() |> 
     nngeo::st_remove_holes()
 
-map_theme <- theme_bw() +
+design_map_theme <- theme_bw() +
     theme(
         axis.text=element_blank(), axis.ticks=element_blank(), axis.title=element_blank(),
         panel.spacing=unit(0.55, "mm"),
-        plot.margin=unit(c(0, 0.4, 0, 0), "mm"),
+        # strip.text=element_text(size=rel(0.5)),
+        # strip.background=element_rect(fill="gray70", linewidth=0),
+        plot.margin=unit(c(0, 0, 0, 0), "mm"),
         panel.grid=element_blank(),
-        # strip.text=element_text(size=rel(1.15))
+        legend.position="none"
     )
 
-plot_design_map(u_one_offs$design[[3]], hline_col[3])
-ggsave("figs/util-map2c.pdf", width=3.8, height=3.2)
+p1 <- ggplot() +
+    geom_sf(data=sc_state, fill=NA, col="gray70", linewidth=0.7, alpha=0.9) +
+    geom_sf(data=init_visits, col="gray70", alpha=0.8, size=1.2) +
+    geom_sf(aes(fill=strat, shape=strat), dopt_sp, size=2.1, col="white") +
+    # geom_sf_text(aes(label=site), col=col, alpha=0.8, size=1.6, nudge_y=-0.2, nudge_x=0.2) +
+    facet_wrap(~month, drop=FALSE, nrow=2) +
+    scale_fill_manual(values=c("#ff856d", "#c63df5", "#f53dbc")) +
+    scale_shape_manual(values=22:24, guide="none") +
+    design_map_theme
 
-search_cols <- c("#f5b43d", "#f53db5", "#c63df5")
-plot_design_map(filter(u_res, num_loc == 20, strat == "Simulated Annealing")$design[[1]], search_cols[3])
-ggsave("figs/util-map3-sa.pdf", width=4.8, height=4.2)
+plot_grid(p1, NULL, p2, nrow=3, rel_heights=c(1, 0.09, 1))
+
+ggsave("figs/figure 4/designs-map.pdf", width=6, height=4.5)

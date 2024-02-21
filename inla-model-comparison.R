@@ -2,6 +2,7 @@ library(INLA)
 library(tidyverse)
 library(sf)
 library(cowplot)
+library(ggridges)
 # library(pROC)
 # library(gridExtra)
 
@@ -87,16 +88,12 @@ rx_models <- list(
     )
 )
 
-# TODO: write this (and everything) up: I also repeated this analysis without land_cover,
-# cause it seemed like the model was almost singular due to large cov_mat in those directions,
-# but the models were a bit worse (even by ML)
-
 mod_comp_res <- expand_grid(fx=fct_inorder(names(fx_models)), rx=fct_inorder(names(rx_models))) |> 
     mutate(
         form=map2(fx, rx, ~update(fx_models[[.x]], rx_models[[.y]])),
         ft=map(form, ~{
             print(.x)
-            fit_model(.x, parks_obs, fx_prec=0., control_compute=list(mlik=TRUE, dic=TRUE))
+            fit_model(.x, parks_obs, fx_prec=0.2, control_compute=list(mlik=TRUE, dic=TRUE))
         }),
         mlik=map_dbl(ft, ~.x$mlik[1, 1]),
         dic=map_dbl(ft, ~.x$dic$dic),
@@ -128,7 +125,7 @@ ggsave("figs/model-comp-dic.pdf", width=5.2, height=5)
 # Best model performance----------------------------------------------------------
 
 best_model <- slice_min(mod_comp_res, dic, n=1)$form[[1]]
-best_fit <- fit_model(best_model, parks_obs, 0.2)
+best_fit <- fit_model(formula_bed(), parks_obs, 0.2)
 
 ## Marginal posteriors for fixed effect coefficients
 p1 <- best_fit$marginals.fixed |> 
@@ -152,7 +149,7 @@ p1 <- best_fit$marginals.fixed |>
 # Temporal posterior trends
 temp_post_samp <- tibble(
     marg=best_fit$marginals.random$month,
-    month=rep(month(3:12, label=TRUE, abbr=TRUE), 3),
+    month=rep(lubridate::month(3:12, label=TRUE, abbr=TRUE), 3),
     group=rep(c("Amblyomma americanum", "Dermacentor variabilis", "Ixodes spp."), each=10)
 ) |> 
     mutate(rmarg=map(marg, ~inla.rmarginal(1000, .x)))
@@ -191,10 +188,10 @@ ggsave("figs/pres-fixed-effects.pdf", width=5.5, height=7.3)
 parks_obs <- read_parks_sf(drop=min_temp) |> 
     prep_parks_model_data(rescale=FALSE)
 
-all_data <- append_pred_data(parks_obs, pred_grid=prep_pred_grid(parks_obs))
+all_data <- append_pred_data(parks_obs, pred_grid=prep_pred_grid(parks_obs), drop_new_lcc=FALSE)
 
-# fit_all <- fit_model(formula_jsdm(all_data, rx_models$`(month+site):species`), all_data, fx_prec=0.2)
-# fit_all$summary.fixed # assert: fixed effects were included in the model correctly?
+fit_all <- fit_model(formula_bed(), all_data, fx_prec=0.2)
+fit_all$summary.fixed # assert: fixed effects were included in the model correctly?
 
 post_pred_grid <- all_data |>
     mutate(
@@ -214,20 +211,29 @@ pred_map_theme <- theme_bw() +
         legend.box.margin=unit(c(0, 0, 0, 0), "mm")
     )
 
-p1 <- ggplot(post_pred_grid, aes(col=mean_pres)) +
+ppg_tmp <- post_pred_grid |> 
+    mutate(season=fct_inorder(case_match(as.numeric(month), c(12, 1:2) ~ "Winter", 3:5 ~ "Spring", 6:8 ~ "Summer", 9:11 ~ "Fall"))) |> 
+    group_by(site, tick_class, season) |> 
+    summarise(mean_pres=mean(mean_pres)) |> 
+    ungroup()
+
+ggplot(ppg_tmp, aes(col=mean_pres)) +
     geom_sf(shape=15, alpha=0.95, size=1.02) +
     scale_color_viridis_c(option="mako") +
     # new_scale_color() +
     # geom_sf(aes(col=as.factor(pres)), data=pres, size=1.5) +
     # scale_color_manual(values=c(`0`="pink", `1`="red")) +
-    facet_grid(tick_class~month, labeller=as_labeller(c(tick_class=label_wrap_gen))) +
-    labs(col="Probability tick present") +
+    facet_grid(tick_class~season, labeller=as_labeller(c(tick_class=label_wrap_gen))) +
+    labs(col=NULL) +
     pred_map_theme +
     theme(
-        strip.text.x=element_text(size=rel(1.05))
-        # strip.text.y=element_text(size=rel(1.05)), 
-        # legend.title=element_text(size=rel(1.25))
+        legend.position="right",
+        # strip.text.x=element_text(size=rel(1.05))
+        strip.text.y=element_text(size=rel(1.09)),
+        legend.title=element_text(size=rel(1.3))
     )
+
+ggsave("astmh-poster/pred-map.pdf", width=5.4, height=3.8)
 
 p2 <- ggplot(post_pred_grid, aes(col=sd_pres)) +
     geom_sf(shape=15, alpha=0.95, size=1.02) +

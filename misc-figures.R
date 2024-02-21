@@ -1,8 +1,123 @@
 library(tidyverse)
 library(sf)
-library(corrplot)
-library(car)
+# library(corrplot)
+# library(car)
 
+# Predicted risk of candidate survey locations and initial survey results---------
+# Figure S2 of TTBDis paper-------------------------------------------------------
+parks_obs <- read_parks_sf(drop=min_temp) |> 
+    prep_parks_model_data(rescale=FALSE)
+
+fit_obs <- fit_model(formula_bed(), parks_obs, 0.2)
+
+post_pred_obs <- parks_obs |>
+    mutate(
+        month=lubridate::month(month, label=TRUE, abbr=FALSE), # month to english
+        tick_class=str_replace(tick_class, " ", "\n"),
+        pres=factor(pres, labels=c("absent", "present")),
+        mean_pres=fit_obs$summary.fitted.values$mean,
+        sd_pres=fit_obs$summary.fitted.values$sd
+    )
+
+pred_map_theme <- theme_bw() +
+    theme(
+        axis.text=element_blank(), axis.ticks=element_blank(),
+        panel.spacing=unit(0, "mm"),
+        plot.margin=unit(c(0, 0, 0, 0), "mm"),
+        legend.position="bottom",
+        legend.box.margin=unit(c(0, 0, 0, 0), "mm"),
+        panel.grid=element_blank()
+    )
+
+ggplot(post_pred_obs) +
+    geom_sf(data=sc_state, fill="gray80", col="gray80", linewidth=0.7, alpha=0.9) +
+    geom_sf(aes(col=mean_pres, shape=pres), size=1.65, alpha=0.8) +
+    scale_color_viridis_c(option="mako") +
+    # scale_color_viridis_c(option="magma", breaks=seq(0, 0.4, 0.1), limits=c(0, 0.4)) +
+    scale_shape_manual(values=c(16, 13)) +
+    facet_grid(tick_class~month, labeller=as_labeller(c(tick_class=label_wrap_gen))) +
+    labs(col="Avg. predicted risk", shape="Observed presence/absence") +
+    pred_map_theme
+
+ggsave("figs/supp/pred-risk-observed.pdf", width=11.5, height=4)
+
+# Summary/overview of initial collections (not gonna use)
+
+read_csv("data-proc/parks-data-20-21.csv") |> 
+    filter(life_stage != "larva") |> # must be filtered since all were assigned A americanum
+    mutate(
+        month=lubridate::month(month, label=TRUE, abbr=FALSE),
+        year=as.factor(year),
+        species=str_replace(species, "affinis", "kearnsi"), # new taxonomy
+        tick_class=str_c(genus, " ", species),
+        pres=ifelse(count > 0, 1, 0)
+    ) |> 
+    select(-c(genus, species, count))
+    
+
+parks_obs <- read_parks_sf(drop=min_temp) |> 
+    prep_parks_model_data(rescale=FALSE) |> 
+    mutate(
+        month=lubridate::month(month, label=TRUE, abbr=FALSE),
+        year=as.factor(lubridate::year(date))
+        # pres=fct_recode(as.character(pres), "absent"="0", "present"="1")
+    )
+
+visits <- distinct(parks_obs, date, site, month, year)
+
+visits |> 
+    count(month, year) |> 
+    ggplot(aes(month, n, fill=year)) +
+    geom_col(position=position_stack()) +
+    theme_bw()
+
+sc_state <- st_read("geo-files/south-carolina-county-boundaries.shp") |> 
+    st_transform(st_crs(parks_obs)) |> 
+    st_union() |> 
+    nngeo::st_remove_holes()
+
+parks_obs |> 
+    count(site) |> 
+    ggplot(aes(size=n, col=n)) +
+    geom_sf(data=sc_state, fill=NA, col="gray70", linewidth=0.7, alpha=0.9) +
+    geom_sf() +
+    scale_color_viridis_c(, option="mako") +
+    labs(col="count", title="total number of visits") +
+    scale_size(guide="none") +
+    theme_bw() +
+    theme(
+        # legend.position="top",
+        panel.grid=element_blank(),
+        axis.text=element_blank(), axis.ticks=element_blank(),
+        plot.margin=unit(c(0, 0, 0, 0), "mm"),
+    )
+
+psumm <- parks_obs |> 
+    group_by(month, site, tick_class) |> 
+    summarise(pres=ifelse(any(pres == 1), "present", "absent"), .groups="drop")
+
+sc_state <- st_read("geo-files/south-carolina-county-boundaries.shp") |> 
+    st_transform(st_crs(parks_obs)) |> 
+    st_union() |> 
+    nngeo::st_remove_holes()
+
+ggplot(psumm, aes(col=pres)) +
+    geom_sf(data=sc_state, fill=NA, col="gray70", linewidth=0.7, alpha=0.9) +
+    geom_sf(size=1.1) +
+    facet_grid(tick_class~month, labeller=as_labeller(c(tick_class=label_wrap_gen))) +
+    scale_color_manual(values=c("#3798a9", "#f53dbc")) +
+    labs(col="Presence of nymphs during visit") +
+    theme_bw() +
+    theme(
+        strip.text=element_text(size=rel(1.05)),
+        axis.text=element_blank(), axis.ticks=element_blank(),
+        panel.spacing=unit(0, "mm"),
+        plot.margin=unit(c(0, 0, 0, 0), "mm"),
+        legend.position="top",
+        legend.box.margin=unit(c(0, 0, 0, 0), "mm")
+    )
+
+### OLD STUFF
 parks <- st_read("geo-files/parks-with-covars.shp") |> 
     rename(
         life_stage=lif_stg, land_cover=lnd_cvr, tree_canopy=tr_cnpy, elevation=elevatn, 
@@ -45,3 +160,33 @@ vif(glm(abun ~ tree_canopy+elevation+jan_min_temp+min_temp+max_temp+precipitatio
 # Make sure VIF good in both cases with min_temp removed
 vif(glm(abun ~ land_cover+tree_canopy+elevation+max_temp+precipitation+mean_rh, "poisson", parks_model_data))
 vif(glm(abun ~ tree_canopy+elevation+max_temp+precipitation+mean_rh, "poisson", parks_model_data))
+
+# For ASTMH Poster----------------------------------------------------------------
+
+df_list <- readRDS("data-proc/bo-risk-sd-dfs.rds")
+obs_mod <- df_list$obs
+pred_mod <- df_list$pred
+risk_mod <- df_list$risk_grid
+
+all_loc_sp <- read_sf("data-proc/parks-design-space.shp") |> 
+    distinct(site, geometry)
+
+risk_mod_sp <- semi_join(all_data, risk_mod, by=c("month", "site")) |> 
+    mutate(month=lubridate::month(date, label=TRUE, abbr=TRUE))
+
+sc_state <- st_read("geo-files/south-carolina-county-boundaries.shp") |> 
+    st_transform(st_crs(all_loc_sp)) |> 
+    st_union() |> 
+    nngeo::st_remove_holes()
+
+library(ggthemes)
+
+ggplot(risk_mod_sp) +
+    geom_sf(data=sc_state, fill=NA, col="#448dc6ff", linewidth=0.9, alpha=0.9) +
+    geom_sf(col="white", size=2) +
+    # geom_sf(col="#ff856dff", size=2.5, shape=1) +
+    geom_sf(col="#ff856dff", size=1) +
+    theme_map() +
+    theme(axis.text=element_blank(), axis.ticks=element_blank())
+
+ggsave("astmh-poster/risk-risk.pdf", width=2, height=2)
