@@ -1,11 +1,12 @@
 library(INLA)
 library(tidyverse)
 library(sf)
+library(lubridate)
 # library(MASS, exclude=c("select"))
 # library(furrr)
 # library(gridExtra)
 # library(DiceOptim)
-library(fields)
+# library(fields)
 library(caret)
 library(ggfortify)
 library(cowplot)
@@ -232,10 +233,7 @@ distinct(tmp, across(land_cover:mean_rh))
 
 # "One-off" design strategies-----------------------------------------------------
 
-## 1. Utility with no additional sampling
-u_none <- util_risk_sd(obs_mod, risk_mod)
-
-## 2-3. Visit all 30 parks again in December/June
+## Visit all 30 parks again in December/June
 
 d_parks_dec <- obs_mod |> 
     distinct(site) |> 
@@ -249,128 +247,19 @@ d_parks_jun <- obs_mod |>
 
 u_parks_jun <- utility(d_parks_jun, obs_mod, n=n, pred_df=pred_mod, util_fun=util_risk_sd, risk_df=risk_mod)
 
-## 4. Reuse the same schedule from 2021
+## Reuse the same schedule from 2021
 d_resamp <- filter(obs_mod, lubridate::year(date) == 2021)
 d_resamp$pres <- NA
 u_resamp <- utility(d_resamp, obs_mod, n=n, util_fun=util_risk_sd, risk_df=risk_mod)
 
 u_one_offs <- tibble(
-    strat=c("    None (0)", "    Revisit in\n    June (30)", "    Revisit in\n    December (30)", "    Repeat 2021\n    schedule (111)"), 
-    design=list(tibble(), distinct(d_parks_jun, date, site), distinct(d_parks_dec, date, site), distinct(d_resamp, date, site)),
-    utility=c(u_none[1], u_parks_jun$risk_sd, u_parks_dec$risk_sd, u_resamp$risk_sd)
+    strat=c("    Revisit in\n    June (30)", "    Revisit in\n    December (30)", "    Repeat 2021\n    schedule (111)"), 
+    design=list(distinct(d_parks_jun, date, site), distinct(d_parks_dec, date, site), distinct(d_resamp, date, site)),
+    utility=c(u_parks_jun$risk_sd, u_parks_dec$risk_sd, u_resamp$risk_sd)
 )
 
-# saveRDS(u_one_offs, "util-results/risk-sd/util-one-offs.rds")
 ofs_dopt <- readRDS("util-results/util-one-offs.rds")
 ofs_rsd <- readRDS("util-results/risk-sd/util-one-offs.rds")
-
-# Bayesian optimization-----------------------------------------------------------
-
-init_utils <- function(pred_df, known_df, d_so_far=tibble(), n_init=10, n=10) {
-    eval_pts <- pred_df |> 
-        distinct(X, Y, t) |> 
-        anti_join(d_so_far) |> 
-        slice_sample(n=n_init)
-    
-    map_dfr(1:n_init, ~{
-        d <- eval_pts[.x,]
-        print(d)
-        tibble_row(
-            X=d$X, Y=d$Y, t=d$t, 
-            utility=utility(bind_rows(d_so_far, d), known_df, n=n, full_df=pred_df, u_only=TRUE, by=c("X", "Y", "t"))
-            # full_df is everything even when d_so_far is not empty
-        )
-    })
-}
-
-iter_bayes_opt <- function(
-        init_utils, pred_df, known_df, d_so_far=tibble(), n=10,
-        max_iter=10, max_same_iter=max_iter, noise_util=0.1,
-        control_km=list(trace=FALSE, pop.size=100, max.generations=50, wait.generations=10),
-        control_akg=list(pop.size=100, max.generations=50, wait.generations=10, BFGSburnin=10)
-) {
-    init_utils$utility <- -init_utils$utility # make sure is minimization problem
-    best_f <- min(init_utils$utility)
-    nsame <- 0
-    # setup record of considered designs, with blank info
-    ures <- bind_rows(init_utils, tibble(utility=rep(NA, max_iter)))
-    
-    eval_pts <- pred_df |> # note that it is allowed to select a pt already in d_so_far (=visit 2x same month)
-        distinct(X, Y, t) |>
-        relocate(X, Y, t) # ensure they are in the right order for kriging
-    
-    for (i in seq_len(max_iter)) { # choose a new point to evaluate U
-        ucur <- ures |> filter(!is.na(utility)) # current design surface
-        
-        krig <- km(
-            ~1, select(ucur, X, Y, t), ucur$utility, scaling=TRUE,
-            noise.var=rep(noise_util, nrow(ucur)), lower=rep(0.1, 3), upper=rep(1, 3),
-            optim.method="BFGS", control=control_km
-        )
-        # res <- max_AKG(
-        #     krig, new.noise.var=noise_util, type="UK", lower=rep(0, 3), upper=rep(1, 3),
-        #     parinit=unlist(select(slice_sample(ucur, n=1), -utility)),
-        #     control=control_akg
-        # )
-        # print(res)
-        # next_pt <- tibble_row(X=res$par[1], Y=res$par[2], t=res$par[3])
-        # d_cand <- bind_rows(d_so_far, next_pt)
-        # next_u_eval <- util_bd_opt(d_cand, known_df, n=n, full_df=pred_df, tibble=FALSE, by=c("X", "Y", "t"))
-        
-        sub_eval_pts <- slice_sample(eval_pts, n=3000)
-        eqi_pts <- map_dbl(
-            1:nrow(sub_eval_pts),
-            ~AKG(c(sub_eval_pts[.x,]), krig, new.noise.var=noise_util, type="SK")
-        )
-        next_pt <- sub_eval_pts[which.max(eqi_pts),]
-        print(next_pt)
-        d_cand <- bind_rows(d_so_far, next_pt)
-        next_u_eval <- -utility(d_cand, known_df, n=n, full_df=pred_df, u_only=TRUE, by=c("X", "Y", "t"))
-        print(next_u_eval)
-        ures[nrow(init_utils)+i,] <- mutate(next_pt, utility=next_u_eval)
-        print(as.data.frame(ures))
-
-        if (next_u_eval <= best_f) {
-            best_f <- next_u_eval
-            nsame <- 0
-        } else {
-            nsame <- nsame + 1
-        }
-        if (nsame > max_same_iter)
-            break
-    }
-    ures <- filter(ures, !is.na(utility)) # remove any unused rows from terminating early
-    ures$utility <- -ures$utility # convert back to a maximization problem
-    
-    return(list(
-        best=slice_max(ures, utility, n=1, with_ties=FALSE),
-        all=ures
-    ))
-}
-
-library(DiceKriging)
-library(DiceOptim)
-
-# TODO: these can be reused from d_random (but just for first step when num_loc=1)
-utils1 <- init_utils(grid_mod, parks_mod, n_init=40, n=40)
-bo1 <- iter_bayes_opt(utils1, grid_mod, parks_mod, n=40, max_iter=15)
-
-utils2 <- init_utils(grid_mod, parks_mod, bo1$best, n_init=40, n=40)
-bo2 <- iter_bayes_opt(utils2, grid_mod, parks_mod, d_so_far=bo1$best[1, c("X", "Y", "t")], n=40, max_iter=15)
-
-utils3 <- init_utils(grid_mod, parks_mod, bind_rows(bo1$best, bo2$best), n_init=40, n=40)
-bo3 <- iter_bayes_opt(bo3$all, grid_mod, parks_mod, d_so_far=bind_rows(bo1$best, bo2$best), n=40, max_iter=15)
-
-ggplot(bo3$all, aes(X, Y, col=utility, size=utility)) +
-    geom_point() +
-    facet_wrap(~t, nrow=2)
-
-utils0 |> 
-    arrange(desc(utility)) |> 
-    select(X:t) |> 
-    slice(1) |> 
-    utility(parks_mod, n=1, full_df=grid_mod, by=c("X", "Y", "t"))
-
 
 # Plot the results comparing all strategies---------------------------------------
 
@@ -393,23 +282,33 @@ res_rsd <- strats |>
 
 res_rsd_random <- filter(res_rsd, strat == "Random")
 
-hline_col <- c("#3c4276", "#3798a9", "#7fd7b8", "#98d180")
+hline_col <- c("#3798a9", "#7fd7b8", "#98d180")
     
-gg <- ggplot(res_dopt_random, aes(factor(num_loc), utility)) +
+gg_dopt <- ggplot(res_dopt_random, aes(factor(num_loc), utility)) +
     geom_hline(yintercept=ofs_dopt$utility, col=hline_col, alpha=0.65, linewidth=1, linetype="dashed") +
+    geom_violin(fill="#9ac9e7", col="gray70", alpha=0.75)  +
+    geom_point(size=0.84, col="#9ac9e7") +
+    coord_cartesian(clip="off") +
+    labs(x=NULL, y=NULL, col="Search strategy") +
+    theme_bw() +
+    theme(plot.margin=unit(c(t=0.1, r=0.1, b=0.1, l=0), "in"))
+
+gg_rsd <- ggplot(res_rsd_random, aes(factor(num_loc), utility)) +
+    geom_hline(yintercept=ofs_rsd$utility, col=hline_col, alpha=0.65, linewidth=1, linetype="dashed") +
     geom_violin(fill="#9ac9e7", col="gray70", alpha=0.75)  +
     geom_point(size=0.84, col="#9ac9e7") +
     coord_cartesian(clip="off") +
     annotate(
         "text",
         label=ofs_rsd$strat,
-        y=ofs_dopt$utility + c(0, -0.06, 0.06, 0),
-        # y=ofs_rsd$utility + c(0, 0.002, -0.002, 0),
+        # y=ofs_rsd$utility + c(-0.06, 0.06, 0),
+        y=ofs_rsd$utility + c(0.002, -0.002, 0),
         col=hline_col, x=4.45, hjust="left", size=3
     ) +
-    labs(x="Number of locations", y="Utility", col="Search strategy") +
+    labs(x=NULL, y=NULL, col=NULL) +
     theme_bw() +
     theme(plot.margin=unit(c(t=0.1, r=1, b=0.1, l=0), "in"))
+
 
 plot_searches <- function(gg, u_res, vars) {
     u_sub <- filter(u_res, strat != "Random", strat %in% vars) |> 
@@ -425,21 +324,22 @@ plot_searches <- function(gg, u_res, vars) {
         theme(legend.position="none")
 }
 
-gg_dopt <- plot_searches(gg, res_dopt, c("Variance", "Space-filling", "Simulated Annealing", "Exchange"))
-gg_risk_sd <- plot_searches(gg, res_rsd, names(strats))
+gg_dopt <- plot_searches(gg_dopt, res_dopt, names(strats))
+gg_risk_sd <- plot_searches(gg_rsd, res_rsd, names(strats))
 legend <- get_legend(gg_dopt + theme(legend.position="top", legend.justification="left"))
 
 plot_grid(
     legend,
-    plot_grid(gg_dopt, NULL, rel_widths=c(1, 0.3)),
-    # plot_grid(gg_dopt, NULL, gg_risk_sd, rel_widths=c(1, 0.05, 1.37), nrow=1),
+    # plot_grid(gg_dopt, NULL, rel_widths=c(1, 0.3)),
+    plot_grid(gg_dopt, NULL, gg_risk_sd, rel_widths=c(1, 0.05, 1.39), nrow=1),
     # plot_grid(NULL, legend, rel_widths=c(0.2, 1)),
     nrow=2, rel_heights=c(0.15, 1)
 )
 
-ggsave("figs/util-results.pdf", width=6.2, height=3.8)
+ggsave("figs/figure 4/util-results-a.pdf", width=6.2, height=3.8)
 
 # Visualizing designs using dimension reduction-----------------------------------
+#  Figure S3 of TTBDis paper------------------------------------------------------
 library(FactoMineR)
 library(factoextra)
 
@@ -467,7 +367,7 @@ plot_famd_searches <- function(famd, d1, d2, axes=c(1, 2)) {
         coord_cartesian(clip="off") +
         labs(title=NULL) +
         theme_bw() +
-        theme(plot.margin=unit(c(t=0, r=0, b=0.1, l=0.1), "in"))
+        theme(plot.margin=unit(c(t=0, r=0.1, b=0.1, l=0.1), "in"))
 }
 
 covars <- pred_mod |> 
@@ -477,16 +377,11 @@ covars <- pred_mod |>
 famd1 <- famd_searches(res_dopt, covars)
 famd2 <- famd_searches(res_rsd, covars)
 
-plot_grid()
-plot_famd_searches(famd1, `Dim 1`, `Dim 2`)
-ggsave("figs/figure 4/famd-dopt.pdf", width=3, height=3)
-
 famd_grid <- plot_grid(
     plot_famd_searches(famd1, `Dim 1`, `Dim 2`) + labs(title="1st design criterion"),
     plot_famd_searches(famd2, `Dim 1`, `Dim 2`) + labs(title="2nd design criterion"),
     plot_famd_searches(famd1, `Dim 3`, `Dim 4`, c(3, 4)),
     plot_famd_searches(famd2, `Dim 3`, `Dim 4`, c(3, 4)),
-    # plot_famd_searches(famd2) + theme(axis.title.y=element_blank(), plot.margin=unit(c(t=0, r=0, b=0, l=0.3), "in")),
     nrow=2, labels="AUTO"
 )
 
@@ -510,9 +405,6 @@ rsd_unnest <- res_rsd |>
     mutate(month=ifelse(is.na(month), lubridate::month(date), month)) |> 
     left_join(pred_mod, by=c("site", "month"), multiple="first") |> 
     mutate(month=month(month, label=TRUE, abbr=FALSE))
-
-# some common environmental conditions?
-
 
 # save a CSV of the best search strategies
 all_loc_sp <- read_sf("data-proc/parks-design-space.shp") |> 
@@ -558,18 +450,13 @@ inner_join(all_loc_sp, best_res, multiple="all") |>
 #     unnest(design) |> 
 #     mutate(month=lubridate::month(date, label=TRUE, abbr=FALSE))
 
-init_visits <- read_parks_sf(drop=min_temp) |> 
-    prep_parks_model_data(rescale=FALSE) |> 
-    mutate(month=lubridate::month(month, label=TRUE, abbr=FALSE)) |> 
-    distinct(date, site, month, geometry)
-
-dopt_sp <- inner_join(all_loc_sp, dopt_unnest, multiple="all", copy=TRUE) |> 
+dopt_sp <- inner_join(all_loc_sp, dopt_unnest, multiple="all", copy=TRUE)
     # mutate(strat=factor(strat, labels=c("1st design criterion", "2nd design criterion"))) |> 
-    st_jitter(factor=0.02)
+    # st_jitter(factor=0.02)
 
-rsd_sp <- inner_join(all_loc_sp, rsd_unnest, multiple="all", copy=TRUE) |> 
+rsd_sp <- inner_join(all_loc_sp, rsd_unnest, multiple="all", copy=TRUE)
     # mutate(strat=factor(strat, labels=c("1st design criterion", "2nd design criterion"))) |> 
-    st_jitter(factor=0.02)
+    # st_jitter(factor=0.02)
 
 sc_state <- st_read("geo-files/south-carolina-county-boundaries.shp") |> 
     st_transform(st_crs(parks_obs)) |> 
@@ -587,10 +474,10 @@ design_map_theme <- theme_bw() +
         legend.position="none"
     )
 
-p1 <- ggplot() +
+p2 <- ggplot() +
     geom_sf(data=sc_state, fill=NA, col="gray70", linewidth=0.7, alpha=0.9) +
     geom_sf(data=init_visits, col="gray70", alpha=0.8, size=1.2) +
-    geom_sf(aes(fill=strat, shape=strat), dopt_sp, size=2.1, col="white") +
+    geom_sf(aes(fill=strat, shape=strat), rsd_sp, size=2.1, col="white", alpha=0.7) +
     # geom_sf_text(aes(label=site), col=col, alpha=0.8, size=1.6, nudge_y=-0.2, nudge_x=0.2) +
     facet_wrap(~month, drop=FALSE, nrow=2) +
     scale_fill_manual(values=c("#ff856d", "#c63df5", "#f53dbc")) +
@@ -600,3 +487,13 @@ p1 <- ggplot() +
 plot_grid(p1, NULL, p2, nrow=3, rel_heights=c(1, 0.09, 1))
 
 ggsave("figs/figure 4/designs-map.pdf", width=6, height=4.5)
+
+## "how many proposed design points intersected with the initial collections?"
+init_visits |> 
+    distinct(site, month) |>  # get rid of any repeated visits in the same month
+    inner_join(best_res) |> 
+    select(site, month, strat, criterion)
+
+## "how many design points intersected between strategies?"
+rsd_unnest |> 
+    distinct(site, month)
