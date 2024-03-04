@@ -2,7 +2,7 @@ library(INLA)
 library(tidyverse)
 library(sf)
 library(cowplot)
-library(ggridges)
+# library(ggridges)
 # library(pROC)
 # library(gridExtra)
 
