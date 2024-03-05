@@ -2,7 +2,7 @@
 *.docx
 *.html
 *~lock*
-
+old-scripts/
 data-proc/
 data-raw/
 joint-lab-pres/
@@ -11,9 +11,11 @@ util-results/
 util-results-old/
 geo-files/
 bdhsc-conf-pres/
-
 .Rproj.user
 .Rhistory
 *.RData*
 .Ruserdata
 *.Rproj
+Model Data Preparation.pdf
+BDHSC Conference Abstract.odt
+.DS_Store

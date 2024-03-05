@@ -1,6 +1,7 @@
 library(tidyverse)
 library(sf)
 
+# TODO: this is quite diff now
 parks_obs <- read_parks_sf(drop=min_temp) |> 
     prep_parks_model_data(rescale=FALSE)
 
@@ -31,7 +32,7 @@ all_data <- mutate(
 pred_mod <- filter(all_data, is.na(pres) & !str_detect(site, "g\\d+")) # final not yet observed data for fitting models
 obs_mod <- filter(all_data, !is.na(pres)) # final observed data for fitting models
 
-# only include visits to sites with risk > 0.7 for 3+ months and/or species per year
+# only include visits to sites with risk > 0.75 for at least one species
 risk_grid_mod <- all_data |> 
     filter(is.na(pres) & str_detect(site, "g\\d+")) |> 
     group_by(date, site) |> 

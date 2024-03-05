@@ -185,10 +185,28 @@ park_counts |>
 
 ## Save the parks data
 
-A separate database is saved just for the observed points (we will use these data separately for the model comparison study, and to add to during the design part).
+A separate database is saved just for the observed points (we will use these data separately for the model comparison study, and to add to during the design part). Presence and abundance metrics are also computed here.
 
 ```{r}
 st_write(all_parks, "data-proc/parks-design-space.shp", append=FALSE)
+
+# Larvae must absolute be filtered since they were always assigned A. americanum!!!
+park_counts <- park_counts |> 
+    filter(species != "maculatum", life_stage != "larva") |> 
+    relocate(
+        land_cover, tree_canopy, elevation, max_temp, min_temp,
+        precipitation, jan_min_temp, mean_rh, .after=life_stage
+    ) |> 
+    select(-min_temp) |> # drop min_temp for multicollinearity
+    mutate(
+        land_cover=land_cover_labels(land_cover),
+        tick_class=ifelse(
+            genus == "Ixodes", str_c(genus, " spp."), str_c(genus, " ", species)
+        )
+    ) |> 
+    group_by(across(c(date, month, site, tick_class, land_cover:mean_rh))) |>
+    summarize(pres=ifelse(sum(count) > 0, 1L, 0L), abun=sum(count), .groups="drop")
+
 st_write(park_counts, "data-proc/parks-observed.shp", append=FALSE)
 ```
 

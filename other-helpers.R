@@ -1,32 +1,20 @@
 library(tidyverse)
 
 # Initial data preparation--------------------------------------------------------
-# in all analyses, A. maculatum, all larvae, and the min_temp---------------------
-# covariate are removed-----------------------------------------------------------
-read_parks_sf <- function(f="data-proc/parks-observed.shp", drop=NULL) {
-    read_sf(f) |> 
-        rename(
-            life_stage=lif_stg, land_cover=lnd_cvr, tree_canopy=tr_cnpy, elevation=elevatn, 
-            min_temp=min_tmp, max_temp=max_tmp, precipitation=prcpttn, jan_min_temp=jn_mn_t
-        ) |> 
-        # Larvae must absolute be filtered since they were always assigned A. americanum!!!
-        filter(species != "maculatum", life_stage != "larva") |> 
-        relocate(land_cover, tree_canopy, elevation, min_temp, max_temp, precipitation, jan_min_temp, mean_rh, .after=life_stage) |> 
-        select(-{{drop}})
-}
 
-prep_parks_model_data <- function(parks_sf, rescale=TRUE) {
-    # rescale covariates and format a few things
-    parks_rescale <- parks_sf |> 
-        mutate(
-            across(tree_canopy:mean_rh, ~if (rescale) (.x - mean(.x)) / sd(.x) else .x), # center and scale
-            land_cover=land_cover_labels(land_cover),
-            tick_class=ifelse(genus == "Ixodes", str_c(genus, " spp."), str_c(genus, " ", species))
+
+#' read_parks_sf
+#' read in the initial collections data and remove the ESRI abbreviated names
+#'
+#' @param f file string
+#'
+#' @return an `sf` simple feature collection
+read_parks_sf <- function(f="data-proc/parks-observed.shp") {
+    ret <- read_sf(f) |> 
+        rename(
+            tick_class=tck_cls, land_cover=lnd_cvr, tree_canopy=tr_cnpy, elevation=elevatn, 
+            max_temp=max_tmp, precipitation=prcpttn, jan_min_temp=jn_mn_t
         )
-    
-    ret <- parks_rescale |> 
-        group_by(across(c(date, month, site, tick_class, land_cover:mean_rh))) |>
-        summarize(pres=ifelse(sum(count) > 0, 1L, 0L), abun=sum(count), .groups="drop")
     
     mutate(ret, tcnum=case_when(
         tick_class == "Amblyomma americanum" ~ 1L, 
@@ -36,8 +24,49 @@ prep_parks_model_data <- function(parks_sf, rescale=TRUE) {
         arrange(tcnum)
 }
 
+
+#' rescale_covars
+#'
+#' @param df A tibble containing environmental covariates to rescale
+rescale_covars <- function(df) {
+    mutate(df, across(tree_canopy:mean_rh, ~(.x - mean(.x)) / sd(.x)))
+}
+
+# prep_parks_model_data <- function(parks_sf, rescale=TRUE) {
+#     # rescale covariates and format a few things
+#     parks_rescale <- parks_sf |> 
+#         mutate(
+#             
+#             land_cover=land_cover_labels(land_cover),
+#             tick_class=ifelse(genus == "Ixodes", str_c(genus, " spp."), str_c(genus, " ", species))
+#         )
+#     
+#     ret <- parks_rescale |> 
+#         group_by(across(c(date, month, site, tick_class, land_cover:mean_rh))) |>
+#         summarize(pres=ifelse(sum(count) > 0, 1L, 0L), abun=sum(count), .groups="drop")
+#     
+#     mutate(ret, tcnum=case_when(
+#         tick_class == "Amblyomma americanum" ~ 1L, 
+#         tick_class == "Dermacentor variabilis" ~ 2L, 
+#         TRUE ~ 3L
+#     )) |> 
+#         arrange(tcnum)
+# }
+
+#' append_pred_data
+#' For the BED analysis, append the space of possible future park visits to initial
+#' collections data. These visits have pres=NA so if they are chosen by a design, their
+#' outcome is predicted. Optionally, `pred_grid` allows a regular grid of prediction points
+#' to be added similarly (useful for the second design criteria and Figure 3)
+#'
+#' @param obs_df initial collections data
+#' @param f file name
+#' @param pred_grid output of `prep_pred_grid`
+#' @param drop_new_lcc whether land cover classes that do not appear in the initial data should be dropped
+#'
+#' @return An sf collection with environmental variables centered and scaled
 append_pred_data <- function(obs_df, f="data-proc/parks-design-space.shp", pred_grid=NULL, drop_new_lcc=TRUE) {
-    pred_df <- st_read(f) |> 
+    pred_df <- read_sf(f) |> 
         rename(
             land_cover=lnd_cvr, tree_canopy=tr_cnpy, elevation=elevatn, min_temp=min_tmp, max_temp=max_tmp,
             precipitation=prcpttn, jan_min_temp=jn_mn_t
@@ -55,17 +84,22 @@ append_pred_data <- function(obs_df, f="data-proc/parks-design-space.shp", pred_
     if (!is.null(pred_grid))
         pred_df <- bind_rows(pred_df, pred_grid)
     
-    if (drop_new_lcc)
-        pred_df <- filter(pred_df, land_cover %in% levels(obs_df$land_cover)) |> mutate(land_cover=fct_drop(land_cover))
-    
-    # WARNING: all_data has now been scaled, and is the reference covar values for all subdesigns
-    return(prep_new_data(obs_df, pred_df, scale=TRUE))
+    if (drop_new_lcc) {
+        pred_df <- filter(pred_df, land_cover %in% levels(obs_df$land_cover)) |> 
+            mutate(land_cover=fct_drop(land_cover))
+    }
+    # all data will now be scaled, and is the reference covar values for all subdesigns
+    return(rescale_covars(bind_rows(obs_df, pred_df)))
 }
 
-# parks_data should already be centered/scaled (which is fine because this data is never actually influencing model fit),
-# and should contain both the visitation and design space parks data
+#' prep_pred_grid
+#'
+#' @param parks_data initial collection data. Really only used to get tick_class labels
+#' @param f file name
+#'
+#' @return An sf collection matching the same format as `read_parks_sf`
 prep_pred_grid <- function(parks_data, f="geo-files/covar-grid-16km.shp") {
-    covar_grid <- st_read(f) |> 
+    covar_grid <- read_sf(f) |> 
         rename(
             land_cover=lnd_cvr, tree_canopy=tr_cnpy, elevation=elevatn, min_temp=min_tmp, max_temp=max_tmp,
             precipitation=prcpttn, jan_min_temp=jn_mn_t
@@ -74,49 +108,50 @@ prep_pred_grid <- function(parks_data, f="geo-files/covar-grid-16km.shp") {
         select(-min_temp)
     
     # Add a unique site label to each grid location (i.e. const. over time)
-    covar_grid <- covar_grid |> 
+    covar_grid |> 
         group_by(geo=as.character(geometry)) |> 
         mutate(site=str_c("g", cur_group_id())) |> 
         ungroup() |> 
         select(-geo) |> 
         mutate(data=list(tibble(tick_class=unique(parks_data$tick_class), pres=NA, tcnum=1:3))) |> 
         unnest(c(data))
-    
-    covar_grid
 }
 
 # This should be a function, since 1) the covariate scaling is very much dependent on the chosen locations now, and 
 # 2) the joint residuals require the data to be arranged each time
-prep_new_data <- function(known_df, new_df=NULL, scale=FALSE) {
-    ret <- bind_rows(known_df, new_df)
-    
-    if (scale)
-        ret <- mutate(ret, across(tree_canopy:mean_rh, ~(.x - mean(.x)) / sd(.x)))
-    return(ret)
-}
+# prep_new_data <- function(known_df, new_df=NULL, scale=FALSE) {
+#     ret <- bind_rows(known_df, new_df)
+#     
+#     if (scale)
+#         ret <- mutate(ret, across(tree_canopy:mean_rh, ~(.x - mean(.x)) / sd(.x)))
+#     return(ret)
+# }
 
 # Helpers for working with INLA objects-------------------------------------------
 
-fit_model <- function(formula, data, fx_prec, response="pres", control_compute=list(mlik=FALSE), ...) {
+#' fit_model
+#'
+#' @param formula The model structure specified with an INLA formula
+#' @param data A tibble with data to fit to
+#' @param fx_prec prior precision on the environmental effects
+#' @param control_compute control options such as whether to compute DIC
+#' @param ... other arguments to pass to INLA call
+#'
+#' @return An `inla` fit object
+fit_model <- function(formula, data, fx_prec, control_compute=list(mlik=FALSE), ...) {
     if (is(data, "sf"))
-        data <- st_drop_geometry(data)
-    if (response == "pres") {
-        ret <- inla(
-            formula,
-            data=data,
-            family="binomial",
-            control.fixed = list(
-                expand.factor.strategy="inla", # nec. since alternative removes unused lvls
-                prec=fx_prec
-            ),
-            control.compute=control_compute,
-            control.predictor=list(link=1, compute=TRUE), 
-            ...
-        )
-    } else {
-        ret <- "not implemented"
-    }
-    return(ret)
+        data <- st_drop_geometry(data) # convert it since INLA can be wierd with sf tibbles
+    
+    inla(
+        formula, data=data, family="binomial",
+        control.fixed = list(
+            expand.factor.strategy="inla", # nec. since alternative removes unused lvls
+            prec=fx_prec
+        ),
+        control.compute=control_compute,
+        control.predictor=list(link=1, compute=TRUE), 
+        ...
+    )
 }
 
 # optional update formula for random effects
