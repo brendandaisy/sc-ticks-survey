@@ -1,3 +1,9 @@
+# --------------------------------------------------------------------------------
+# bed-workflow-example.R----------------------------------------------------------
+# A rough script that was used to produce components of Figure 1, illustrating----
+# the idea behind BED in a simple design space------------------------------------
+# --------------------------------------------------------------------------------
+
 library(tidyverse)
 library(INLA)
 

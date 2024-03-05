@@ -14,7 +14,8 @@ read_parks_sf <- function(f="data-proc/parks-observed.shp") {
         rename(
             tick_class=tck_cls, land_cover=lnd_cvr, tree_canopy=tr_cnpy, elevation=elevatn, 
             max_temp=max_tmp, precipitation=prcpttn, jan_min_temp=jn_mn_t
-        )
+        ) |> 
+        mutate(land_cover=fct_drop(factor(land_cover, levels=land_cover_names())))
     
     mutate(ret, tcnum=case_when(
         tick_class == "Amblyomma americanum" ~ 1L, 
@@ -75,7 +76,7 @@ append_pred_data <- function(obs_df, f="data-proc/parks-design-space.shp", pred_
         relocate(land_cover, tree_canopy, elevation, min_temp, max_temp, precipitation, jan_min_temp, mean_rh, .after=date) |> 
         select(-min_temp)
     
-    # Add a unique site label to each grid location (i.e. const. over time)
+    # Add mising pres for each tick species for the future visits
     pred_df <- pred_df |> 
         mutate(data=list(tibble(tick_class=unique(obs_df$tick_class), pres=NA, tcnum=1:3))) |> 
         unnest(c(data))
@@ -214,7 +215,13 @@ fx_labels <- function(fx) {
 
 land_cover_labels <- function(lc) {
     lv <- c(11, 12, 21:24, 31, 41:43, 51, 52, 71:74, 81, 82, 90, 95) |> as.character()
-    lab <- c(
+    lab <- land_cover_names()
+    ret <- factor(as.character(lc), levels=lv, labels=lab)
+    return(fct_drop(ret))
+}
+
+land_cover_names <- function() {
+    c(
         "Open Water",
         "Perennial Ice/Snow",
         "Developed, Open Space",
@@ -235,33 +242,6 @@ land_cover_labels <- function(lc) {
         "Cultivated Crops",
         "Woody Wetlands",
         "Emergent Herbaceous Wetlands"
-    )
-    ret <- factor(as.character(lc), levels=lv, labels=lab)
-    return(fct_drop(ret))
-}
-
-land_cover_palette <- function() {
-    c(
-        "Open Water" = "#5475a8",
-        "Perennial Ice/Snow" = "white",
-        "Developed, Open Space" = "#e8d1d1",
-        "Developed, Low Intensity" = "#e29e8c",
-        "Developed, Medium Intensity" = "#ff0000",
-        "Developed, High Intensity" = "#b50000",
-        "Barren Land" = "#d2cdc0",
-        "Deciduous Forest" = "#85c77e",
-        "Evergreen Forest" = "#38814e",
-        "Mixed Forest" = "#d4e7b0",
-        "Dwarf Scrub" = "#af963c",
-        "Shrub/Scrub" = "#dcca8f",
-        "Grassland/Herbaceous" = "#fde9aa",
-        "Sedge/Herbaceous" = "#d1d182",
-        "Lichens" = "#a3cc51",
-        "Moss" = "#82ba9e",
-        "Pasture/Hay" = "#fbf65d",
-        "Cultivated Crops" = "#ca9146",
-        "Woody Wetlands" = "#c8e6f8",
-        "Emergent Herbaceous Wetlands" = "#64b3d5"
     )
 }
 
