@@ -3,7 +3,6 @@
 # Implementation of step 1 of BED, where a number of forms for environmental------
 # and spatiotemporal effects are compared-----------------------------------------
 # --------------------------------------------------------------------------------
-
 library(INLA)
 library(tidyverse)
 library(sf)
@@ -179,7 +178,8 @@ p2 <- ggplot(unnest(temp_post_samp, rmarg), aes(rmarg, month, fill=group)) +
 
 plot_grid(p1, p2, nrow=1, rel_heights=c(1, 0.86), rel_widths=c(1.1, 1), labels=c("A", "B"))
 
-###
+# Figure 3------------------------------------------------------------------------
+# Posterior mean and standard deviation for risk across South Carolina------------
 pred_grid <- prep_pred_grid(parks_obs)
 
 all_data <- read_parks_sf() |> # original parks data without scaled covariates
@@ -211,4 +211,37 @@ ggplot(post_pred_grid, aes(col=mean_pres)) +
     # scale_color_viridis_c(option="magma", breaks=seq(0, 0.4, 0.1), limits=c(0, 0.4)) +
     facet_grid(tick_class~month, labeller=as_labeller(c(tick_class=label_wrap_gen))) +
     labs(col="Probability tick present") +
+    pred_map_theme
+
+# Predicted risk of candidate survey locations and initial survey results---------
+# Figure S2 of TTBDis paper-------------------------------------------------------
+fit_obs <- fit_model(formula_bed(), parks_obs, 0.2)
+
+post_pred_obs <- parks_obs |>
+    mutate(
+        month=lubridate::month(month, label=TRUE, abbr=FALSE), # month to english
+        tick_class=str_replace(tick_class, " ", "\n"),
+        pres=factor(pres, labels=c("absent", "present")),
+        mean_pres=fit_obs$summary.fitted.values$mean,
+        sd_pres=fit_obs$summary.fitted.values$sd
+    )
+
+pred_map_theme <- theme_bw() +
+    theme(
+        axis.text=element_blank(), axis.ticks=element_blank(),
+        panel.spacing=unit(0, "mm"),
+        plot.margin=unit(c(0, 0, 0, 0), "mm"),
+        legend.position="bottom",
+        legend.box.margin=unit(c(0, 0, 0, 0), "mm"),
+        panel.grid=element_blank()
+    )
+
+ggplot(post_pred_obs) +
+    geom_sf(data=sc_state, fill="gray80", col="gray80", linewidth=0.7, alpha=0.9) +
+    geom_sf(aes(col=mean_pres, shape=pres), size=1.65, alpha=0.8) +
+    scale_color_viridis_c(option="mako") +
+    # scale_color_viridis_c(option="magma", breaks=seq(0, 0.4, 0.1), limits=c(0, 0.4)) +
+    scale_shape_manual(values=c(16, 13)) +
+    facet_grid(tick_class~month, labeller=as_labeller(c(tick_class=label_wrap_gen))) +
+    labs(col="Avg. predicted risk", shape="Observed presence/absence") +
     pred_map_theme

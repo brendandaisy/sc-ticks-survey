@@ -1,45 +1,5 @@
 library(tidyverse)
 library(sf)
-# library(corrplot)
-# library(car)
-
-# Predicted risk of candidate survey locations and initial survey results---------
-# Figure S2 of TTBDis paper-------------------------------------------------------
-parks_obs <- read_parks_sf(drop=min_temp) |> 
-    prep_parks_model_data(rescale=FALSE)
-
-fit_obs <- fit_model(formula_bed(), parks_obs, 0.2)
-
-post_pred_obs <- parks_obs |>
-    mutate(
-        month=lubridate::month(month, label=TRUE, abbr=FALSE), # month to english
-        tick_class=str_replace(tick_class, " ", "\n"),
-        pres=factor(pres, labels=c("absent", "present")),
-        mean_pres=fit_obs$summary.fitted.values$mean,
-        sd_pres=fit_obs$summary.fitted.values$sd
-    )
-
-pred_map_theme <- theme_bw() +
-    theme(
-        axis.text=element_blank(), axis.ticks=element_blank(),
-        panel.spacing=unit(0, "mm"),
-        plot.margin=unit(c(0, 0, 0, 0), "mm"),
-        legend.position="bottom",
-        legend.box.margin=unit(c(0, 0, 0, 0), "mm"),
-        panel.grid=element_blank()
-    )
-
-ggplot(post_pred_obs) +
-    geom_sf(data=sc_state, fill="gray80", col="gray80", linewidth=0.7, alpha=0.9) +
-    geom_sf(aes(col=mean_pres, shape=pres), size=1.65, alpha=0.8) +
-    scale_color_viridis_c(option="mako") +
-    # scale_color_viridis_c(option="magma", breaks=seq(0, 0.4, 0.1), limits=c(0, 0.4)) +
-    scale_shape_manual(values=c(16, 13)) +
-    facet_grid(tick_class~month, labeller=as_labeller(c(tick_class=label_wrap_gen))) +
-    labs(col="Avg. predicted risk", shape="Observed presence/absence") +
-    pred_map_theme
-
-ggsave("figs/supp/pred-risk-observed.pdf", width=11.5, height=4)
 
 # Summary/overview of initial collections (not gonna use)
 

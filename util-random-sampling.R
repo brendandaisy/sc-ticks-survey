@@ -1,8 +1,11 @@
+# --------------------------------------------------------------------------------
+# util-random-sampling.R----------------------------------------------------------
+# script to sample designs uniformly at random, eval their utility, and save------
+# the results---------------------------------------------------------------------
+# --------------------------------------------------------------------------------
 library(INLA)
-library(purrr)
 library(tidyverse)
 library(sf)
-library(furrr)
 
 source("other-helpers.R")
 source("utility-helpers.R")

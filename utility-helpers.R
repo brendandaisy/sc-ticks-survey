@@ -1,3 +1,7 @@
+# --------------------------------------------------------------------------------
+# utility-helpers.R---------------------------------------------------------------
+# functions for calculating utility and for the two design criteria used----------
+# --------------------------------------------------------------------------------
 library(INLA)
 library(tidyverse)
 library(sf)
@@ -69,6 +73,7 @@ util_dopt <- function(new_df, sel, risk_df=NULL) {
     -log(det(ft$selection$cov.matrix))
 }
 
+# Criteria 2 for maximizing info for high-risk visits
 util_risk_sd <- function(new_df, risk_df, sel=NULL) {
     ndf <- bind_rows(new_df, risk_df)
     f <- formula_bed()
@@ -104,26 +109,3 @@ on_inla_error <- function(e, design, sample) {
     print(sample)
     stop()
 }
-
-# if file exists, it will be appended
-# the result is returned
-# save_util_res <- function(
-#         utils, strat=c("random", "simple-var", "bayes-opt", "sim-ann"), n, 
-#         append=FALSE, alpha=NULL
-# ) {
-#     a <- if (is.null(alpha)) "" else paste0("-alpha=", alpha)
-#     file <- paste0("util-exper/", strat, "-n=", n, a, ".rds")
-#     if (file.exists(file) & append)
-#         res <- readRDS(file)
-#     else
-#         res <- tibble()
-#     ret <- bind_rows(res, utils) |> mutate(strat=strat)
-#     saveRDS(ret, file)
-#     return(ret)
-# }
-# 
-# load_util_res <- function(utils, strat=c("random", "simple-var", "bayes-opt", "sim-ann"), n, alpha=NULL, ...) {
-#     a <- if (is.null(alpha)) "" else paste0("-alpha=", alpha)
-#     file <- paste0("util-exper/", strat, "-n=", n, a, ".rds")
-#     readRDS(file)
-# }

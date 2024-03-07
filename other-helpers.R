@@ -1,7 +1,11 @@
+# --------------------------------------------------------------------------------
+# other-helpers.R-----------------------------------------------------------------
+# functions for reading in data, fitting INLA models, and other misc. tasks-------
+# --------------------------------------------------------------------------------
 library(tidyverse)
+library(INLA)
 
 # Initial data preparation--------------------------------------------------------
-
 
 #' read_parks_sf
 #' read in the initial collections data and remove the ESRI abbreviated names
@@ -97,16 +101,6 @@ prep_pred_grid <- function(parks_data, f="geo-files/covar-grid-16km.shp") {
         unnest(c(data))
 }
 
-# This should be a function, since 1) the covariate scaling is very much dependent on the chosen locations now, and 
-# 2) the joint residuals require the data to be arranged each time
-# prep_new_data <- function(known_df, new_df=NULL, scale=FALSE) {
-#     ret <- bind_rows(known_df, new_df)
-#     
-#     if (scale)
-#         ret <- mutate(ret, across(tree_canopy:mean_rh, ~(.x - mean(.x)) / sd(.x)))
-#     return(ret)
-# }
-
 # Helpers for working with INLA objects-------------------------------------------
 
 #' fit_model
@@ -134,16 +128,6 @@ fit_model <- function(formula, data, fx_prec, control_compute=list(mlik=FALSE), 
     )
 }
 
-# optional update formula for random effects
-formula_jsdm <- function(df, rx=~.) {
-    ret <- pres ~ -1 + tick_class +  
-        tick_class:land_cover + tick_class:tree_canopy + tick_class:elevation +
-        tick_class:jan_min_temp + tick_class:max_temp + tick_class:precipitation + tick_class:mean_rh +
-        f(id, model="iid3d", n=nrow(df), hyper=list(prec1=list(param=c(4, rep(1, 3), rep(0, 3)))))
-    
-    update(ret, rx)
-}
-
 # the preferred model for performing BED
 formula_bed <- function(...) {
     prec_pri <- list(prec=list(prior="loggamma", param=c(1, 0.1)))
@@ -154,13 +138,7 @@ formula_bed <- function(...) {
         f(site, model = "iid", hyper = prec_pri, group = tcnum, control.group = list(model = "iid", hyper = prec_pri))
 }
 
-fit_all_data <- function(all_data) {
-    f <- formula_bed()
-    fit_model(f, all_data, fx_prec=0.2, control_compute=list(mlik=TRUE, dic=TRUE))
-}
-
 # Helpers for relabelling and preparing fixed effects for analysis----------------
-
 summ_fx <- function(fx_marg) {
     imap_dfr(fx_marg, ~{
         ci5 <- inla.hpdmarginal(0.5, .x)
