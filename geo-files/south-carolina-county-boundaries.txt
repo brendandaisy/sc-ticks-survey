@@ -1,0 +1,28 @@
+========================================================================
+ South Carolina County Boundaries
+------------------------------------------------------------------------
+ https://koordinates.com/layer/96987-south-carolina-county-boundaries/
+========================================================================
+From: State of South Carolina
+
+Description:
+  This layer is a component of [SC Statewide Address Points and
+  Centerlines](http://cowen.gis.sc.gov:6080/arcgis/rest/services/GIC/Address_Points_and_Centerlines/MapServer?f=json).
+  
+  © SC DOT, SC Counties, SC Geographic Information Council
+
+CRS: NAD83(NSRS2007) / South Carolina (ft)
+
+------------------------------------------------------------------------
+ Processing steps applied by Koordinates
+------------------------------------------------------------------------
+
+- imported to Koordinates in Esri JSON format on 12 Sep 2018
+- converted by Koordinates to Shapefile on 26 Apr 2022 (reference #2477417)
+
+====================
+No license specified
+====================
+
+No license was specified for this layer. This could mean default rights under copyright law for your legal jurisdiction may apply. Please check with Koordinates if you're unsure of your right to access and use this layer.
+
