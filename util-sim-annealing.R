@@ -1,3 +1,8 @@
+# --------------------------------------------------------------------------------
+# util-sim-annealing.R------------------------------------------------------------
+# search for an optimal design using a Simulated Annealing algorithm, and---------
+# save the results----------------------------------------------------------------
+# --------------------------------------------------------------------------------
 library(INLA)
 library(purrr)
 library(tidyverse)
@@ -8,12 +13,6 @@ source("other-helpers.R")
 source("utility-helpers.R")
 
 inla.setOption(inla.mode="classic")
-
-init_d_cand <- function(pred_df) {
-    pred_df |> 
-        group_by(date, site) |> 
-        summarise(var_eta=mean(var_eta), .groups="drop")
-}
 
 #' simulated_annealing
 #'
@@ -27,6 +26,8 @@ init_d_cand <- function(pred_df) {
 #' @param d_so_far optionally, a previously found design, to add `num_loc` more on to. These points will NOT be changed
 #' @param d_init optionally, a pre specified design to start searching from. These points WILL be changed
 #' @param weight_by a variable to weight by when choosing new design points
+#' @param info_iter print progress after this many iterations has passed
+#' @param restart optionally, an iteration to reset back to the best utility found so far
 #'
 #' @return a `list` contain the best design, its approx utility, and the iteration it was found in
 simulated_annealing <- function(
@@ -82,42 +83,41 @@ simulated_annealing <- function(
     return(list(d=bind_rows(d_best, d_so_far), u_approx=u_best, at=i_best))
 }
 
+init_d_cand <- function(pred_df) {
+    pred_df |> 
+        group_by(date, site) |> 
+        summarise(var_eta=mean(var_eta), .groups="drop")
+}
+
+# helper to plot tuning of alpha and T0 for SA
+sa_acceptance_prob <- function(u_prop, u_curr, alpha, T0, iter) {
+    T_sched <- T0*seq(1, 0, length.out=iter)^alpha
+    probs <- exp((log10(u_prop) - log10(u_curr)) / T_sched)
+    
+    ggplot(enframe(probs), aes(name, value)) +
+        geom_point() +
+        labs(x="iteration", y="prob.")
+}
+
 # Data preparation----------------------------------------------------------------
 df_list <- readRDS("data-proc/bo-risk-sd-dfs.rds")
 obs_mod <- df_list$obs
 pred_mod <- df_list$pred
 risk_mod <- df_list$risk_grid
 
-n_est <- 50
+n_est <- 50 # can make this lower for faster search
 n <- 50
 
-# for adding some more iters:
-d_so_far <- res$design[[3]]
-d_init <- res$design[[4]][1:5,]
-sa_res <- simulated_annealing(
-    pred_mod, obs_mod, 5, iter=50, weight_by=NULL,
-    alpha=1.3, T0=0.01, n_est=n_est, d_so_far=d_so_far, info_iter=5, d_init=d_init
-)
-res <- tibble_row(risk_sd=sa_res$u_approx, design=list(sa_res$d), num_loc=nrow(sa_res$d))
-saveRDS(res, "util-results/risk-sd/sim-ann-4.rds")
-
 d_so_far <- tibble()
-for (i in 1:2) {
-    sa_res <- simulated_annealing(pred_mod, obs_mod, 5, iter=100, alpha=1.3, T0=0.02, n_est=n_est, d_so_far=d_so_far, info_iter=5, restart=50)
+for (i in 1:4) {
+    sa_res <- simulated_annealing(pred_mod, obs_mod, 5, iter=150, alpha=1.3, T0=0.02, n_est=n_est, d_so_far=d_so_far, info_iter=5, restart=50)
     d_so_far <- sa_res$d
     u_res <- utility(sa_res$d, obs_mod, n=n, pred_df=pred_mod, util_fun=util_risk_sd, risk_df=risk_mod)
     res <- tibble_row(!!!u_res, num_loc=nrow(d_so_far))
     saveRDS(res, paste0("util-results/risk-sd/sim-ann3-", i, ".rds"))
 }
-# d_init <- res$design
-# for (i in 3) {
-#     sa_res <- simulated_annealing(pred_mod, obs_mod, 15, iter=20, alpha=1.7, T0=0.01, n_est=n_est, d_init=d_init[[i]], info_iter=5)
-#     d_so_far <- sa_res$d
-#     u_res <- utility(sa_res$d, obs_mod, n=n, pred_df=pred_mod, util_fun=util_risk_sd, risk_df=risk_mod)
-#     res <- tibble_row(!!!u_res, num_loc=nrow(d_so_far))
-#     saveRDS(res, paste0("util-results/util-sim-ann-alpha1pt5-T0pt2-mod-", i, ".rds"))
-# }
 
+# combine the results for each number of visits to a single file
 res <- map_dfr(1:4, ~{
     res_d <- readRDS(paste0("util-results/risk-sd/sim-ann-", .x, ".rds"))
     res_d

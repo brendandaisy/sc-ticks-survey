@@ -3,31 +3,67 @@ library(tidyverse)
 library(sf)
 library(furrr)
 
-# Prepare a list of variables (just coefficients [inc. intercept] and not residuals right now) 
-# for the "selection" option for INLA. Used to compute covariance matrix
-sel_list_inla <- function(df) {
-    vars <- c(
-        str_c("land_cover", levels(df$land_cover)),
-        "tree_canopy", "elevation", "jan_min_temp", "max_temp", "precipitation", "mean_rh"
+#' @name utility
+#' @description Workhorse function to compute the utility of a proposed design `d`
+#'
+#' @param d A df of visits, containing at least columns `date` and `site`
+#' @param known_df A df of any initial collections data
+#' @param n The number of Monte Carlo samples used to approximate utility
+#' @param pred_df Optional df containing info for proposed visits, to retrieve e.g.
+#' covariates if `d` only contains two columns. Probably output from `append_pred_data`
+#' @param util_fun Function defining design criterion
+#' @param u_only Whether to produve a tibble containing results or just a number
+#' @param copy For if `inner_join` is giving a "different data source" error
+#' @param by Passed to `inner_join` to silence warning
+#' @param sel Passed to `util_fun`, used for `util_dopt`
+#' @param risk_df Passed to `util_fun`, used for `util_risk_sd`
+#'
+#' @return A tibble or double of the utility
+utility <- function(
+        d, known_df, n=1, pred_df=NULL, util_fun=util_dopt, u_only=FALSE,
+        copy=FALSE, by=c("date", "site"), sel=NULL, risk_df=NULL
+) {
+    # grab the covariates etc. from `pred_df` if necessary
+    d_df <- if (!is.null(pred_df)) inner_join(pred_df, d, by=by, copy=copy) else d
+    # combine initial and proposed visits and do posterior prediction
+    new_df <- bind_rows(known_df, d_df)
+    pred_idxs <- which(is.na(new_df$pres))
+    pred_risk_mat <- rpost_predict(new_df, pred_idxs, n=n)
+    
+    # for each row in pred mat, get a sample from P(y_pred|y) and calc utility
+    u_rep <- future_map_dbl(1:ncol(pred_risk_mat), ~{
+        new_df$pres[pred_idxs] <- rbinom(nrow(d_df), rep(1, nrow(d_df)), pred_risk_mat[,.x])
+        tryCatch(
+            util_fun(new_df, sel=sel, risk_df=risk_df),
+            error=function(e) {on_inla_error(e, d, new_df$pres[pred_idxs])}
+        )
+    }, .options=furrr_options(seed=TRUE)
     )
-    # add the tick-specific intercepts
-    coefs <- c(str_c("tick_class", c("Amblyomma americanum", "Dermacentor variabilis", "Ixodes spp.")), vars)
-    sel <- rep(1, length(coefs)) |> as.list()
-    names(sel) <- coefs
-    return(sel)
+    # format and return the results, averaging U(d, y) over y
+    if (u_only)
+        return(mean(u_rep, na.rm=TRUE))
+    uname <- substitute(util_fun) |> as.character() |> str_remove("util_")
+    return(tibble_row({{uname}} := mean(u_rep, na.rm=TRUE), design=list(d)))
 }
 
-# returns a matrix of risk probabilities with locations as rows and `n` cols
-rpost_predict <- function(obs_df, pred_idxs, n=1) {
+#' @name rpost_predict
+#' Fit an INLA model to sample presence/absence for proposed future visits 
+#'
+#' @param new_df Initial visitation data
+#' @param pred_idxs The indices/rows in `new_df` corresp. to future visits. Posterior prediction is done at these sites
+#' @param n The number of Monte Carlo samples used to approximate utility
+#'
+#' @return a matrix of risk probabilities with locations as rows and `n` cols
+rpost_predict <- function(new_df, pred_idxs, n=1) {
     f <- formula_bed()
-    ft <- fit_model(f, obs_df, fx_prec=0.2, selection=list(Predictor=pred_idxs))
+    ft <- fit_model(f, new_df, fx_prec=0.2, selection=list(Predictor=pred_idxs))
     jsamp <- inla.rjmarginal(n, ft$selection)
     return(inla.link.invlogit(jsamp$samples))
 }
 
 # Bayesian D-optimality criteria
 # assumes new_df has sampled pres, with parks data added
-util_dopt <- function(new_df, sel, stable=TRUE, risk_df=NULL) {
+util_dopt <- function(new_df, sel, risk_df=NULL) {
     f <- formula_bed()
     ft <- fit_model(f, new_df, fx_prec=0.2, selection=sel)
     -log(det(ft$selection$cov.matrix))
@@ -41,31 +77,23 @@ util_risk_sd <- function(new_df, risk_df, sel=NULL) {
     return(max(vardiff))
 }
 
-# optional full_df can be used to extract all info if d_df only has site and date
-# this can be useful since there are J rows per visit
-# `...` is passed to `util_rep`
-utility <- function(
-        d, known_df, n=1, pred_df=NULL, util_fun=util_dopt, u_only=FALSE,
-        copy=FALSE, by=c("date", "site"), sel=NULL, risk_df=NULL
-    ) {
-    d_df <- if (!is.null(pred_df)) inner_join(pred_df, d, by=by, copy=copy) else d
-    new_df <- prep_new_data(known_df, d_df, scale=FALSE)
-    pred_idxs <- which(is.na(new_df$pres))
-    pred_risk_mat <- rpost_predict(new_df, pred_idxs, n=n)
-    
-    # for each row in pred mat, get a sample from p(y_pred|y) and calc utility
-    u_rep <- future_map_dbl(1:ncol(pred_risk_mat), ~{
-        new_df$pres[pred_idxs] <- rbinom(nrow(d_df), rep(1, nrow(d_df)), pred_risk_mat[,.x])
-        tryCatch(
-            util_fun(new_df, sel=sel, risk_df=risk_df),
-            error=function(e) {on_inla_error(e, d, new_df$pres[pred_idxs])}
-        )
-        }, .options=furrr_options(seed=TRUE)
+#' sel_list_inla
+#' Prepare a list of the  environmental effects for the `selection` option for INLA
+#' Used to compute the posterior covariance matrix used for D-opt criterion
+#'
+#' @param df To get the environmental variable names
+#'
+#' @return A named list
+sel_list_inla <- function(df) {
+    vars <- c(
+        str_c("land_cover", levels(df$land_cover)),
+        "tree_canopy", "elevation", "jan_min_temp", "max_temp", "precipitation", "mean_rh"
     )
-    if (u_only)
-        return(mean(u_rep, na.rm=TRUE))
-    uname <- substitute(util_fun) |> as.character() |> str_remove("util_")
-    return(tibble_row({{uname}} := mean(u_rep, na.rm=TRUE), design=list(d)))
+    # add the tick-specific intercepts
+    coefs <- c(str_c("tick_class", c("Amblyomma americanum", "Dermacentor variabilis", "Ixodes spp.")), vars)
+    sel <- rep(1, length(coefs)) |> as.list()
+    names(sel) <- coefs
+    return(sel)
 }
 
 on_inla_error <- function(e, design, sample) {
@@ -79,33 +107,23 @@ on_inla_error <- function(e, design, sample) {
 
 # if file exists, it will be appended
 # the result is returned
-save_util_res <- function(
-        utils, strat=c("random", "simple-var", "bayes-opt", "sim-ann"), n, 
-        append=FALSE, alpha=NULL
-) {
-    a <- if (is.null(alpha)) "" else paste0("-alpha=", alpha)
-    file <- paste0("util-exper/", strat, "-n=", n, a, ".rds")
-    if (file.exists(file) & append)
-        res <- readRDS(file)
-    else
-        res <- tibble()
-    ret <- bind_rows(res, utils) |> mutate(strat=strat)
-    saveRDS(ret, file)
-    return(ret)
-}
-
-load_util_res <- function(utils, strat=c("random", "simple-var", "bayes-opt", "sim-ann"), n, alpha=NULL, ...) {
-    a <- if (is.null(alpha)) "" else paste0("-alpha=", alpha)
-    file <- paste0("util-exper/", strat, "-n=", n, a, ".rds")
-    readRDS(file)
-}
-
-# helper function to check tuning of alpha and T0 for SA
-sa_acceptance_prob <- function(u_prop, u_curr, alpha, T0, iter) {
-    T_sched <- T0*seq(1, 0, length.out=iter)^alpha
-    probs <- exp((log10(u_prop) - log10(u_curr)) / T_sched)
-    
-    ggplot(enframe(probs), aes(name, value)) +
-        geom_point() +
-        labs(x="iteration", y="prob.")
-}
+# save_util_res <- function(
+#         utils, strat=c("random", "simple-var", "bayes-opt", "sim-ann"), n, 
+#         append=FALSE, alpha=NULL
+# ) {
+#     a <- if (is.null(alpha)) "" else paste0("-alpha=", alpha)
+#     file <- paste0("util-exper/", strat, "-n=", n, a, ".rds")
+#     if (file.exists(file) & append)
+#         res <- readRDS(file)
+#     else
+#         res <- tibble()
+#     ret <- bind_rows(res, utils) |> mutate(strat=strat)
+#     saveRDS(ret, file)
+#     return(ret)
+# }
+# 
+# load_util_res <- function(utils, strat=c("random", "simple-var", "bayes-opt", "sim-ann"), n, alpha=NULL, ...) {
+#     a <- if (is.null(alpha)) "" else paste0("-alpha=", alpha)
+#     file <- paste0("util-exper/", strat, "-n=", n, a, ".rds")
+#     readRDS(file)
+# }

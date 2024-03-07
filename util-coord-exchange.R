@@ -1,3 +1,7 @@
+# --------------------------------------------------------------------------------
+# util-coord-exchange.R-----------------------------------------------------------
+# search for an optimal design using an exchange algorithm and save the results---
+# --------------------------------------------------------------------------------
 library(INLA)
 library(purrr)
 library(tidyverse)
@@ -10,15 +14,20 @@ source("utility-helpers.R")
 
 inla.setOption(inla.mode="classic")
 
-nearest_neighbors <- function(loc_sp, k) {
-    nn_list <- loc_sp |> 
-        st_nn(loc_sp, k=k+1) |> 
-        map(\(nn) loc_sp$site[nn[-1]])
-    
-    names(nn_list) <- loc_sp$site
-    return(nn_list)
-}
-
+#' coordinate_exchange
+#'
+#' @param util_fun a wrapper around `utility` accepting a single argument for the design
+#' Allows fixing utility settings such as `n` beforehand 
+#' @param pred_df the prediction data, or where designs can choose to visit. Requires all columns present
+#' @param num_loc the number of locations to add in this round of the design
+#' @param nn_list an adjacency list of names as candidate locations and values as locations considered neighbors
+#' @param max_iter maximum number of allowed utility evaluations. Note convergence of the algorithm can lead
+#' to fewer iterations in total
+#' @param d_so_far optionally, a previously found design, to add `num_loc` more on to. These points will NOT be changed
+#' @param d_init optionally, a pre specified design to start searching from. These points WILL be changed
+#' @param verbose prints utility so far after each "sweep"
+#'
+#' @return a `list` contain the best design and its approx utility 
 coordinate_exchange <- function(
         util_fun, pred_df, num_loc, nn_list, max_iter=10,
         d_so_far=tibble(), d_init=NULL, verbose=FALSE
@@ -79,8 +88,19 @@ coordinate_exchange <- function(
     return(list(d=bind_rows(d_curr, d_so_far), u_approx=u_curr))
 }
 
+# find a nearest neighbors adjacency list using `st_nn`
+# k is the number of neighbors (self-loops are removed)
+nearest_neighbors <- function(loc_sp, k) {
+    nn_list <- loc_sp |> 
+        st_nn(loc_sp, k=k+1) |> 
+        map(\(nn) loc_sp$site[nn[-1]])
+    
+    names(nn_list) <- loc_sp$site
+    return(nn_list)
+}
+
 # Data preparation----------------------------------------------------------------
-df_list <- readRDS("data-proc/bo-risk-sd-dfs.rds")
+df_list <- readRDS("data-proc/bo-risk-sd-dfs.rds") # change to bo-dopt-dfs for the first criterion
 obs_mod <- df_list$obs
 pred_mod <- df_list$pred
 risk_mod <- df_list$risk_grid
@@ -90,23 +110,18 @@ all_loc_sp <- read_sf("data-proc/parks-design-space.shp") |>
 
 nn_list <- nearest_neighbors(all_loc_sp, 4)
 
-n_est <- 45
-n <- 45
+n_est <- 50
+n <- 50
 
-util_fun <- function(d) {
+util_fun <- function(d) { # would also change for the first criterion
     utility(d, obs_mod, n=n_est, by=c("month", "site"), pred_df=pred_mod, u_only=TRUE, util_fun=util_risk_sd, risk_df=risk_mod)
 }
 
-# d_so_far <- readRDS("util-results/coord-ex-2.rds")$design[[1]]
-d_so_far <- ce_res2$d
-ce_res3 <- coordinate_exchange(util_fun, pred_mod, 5, nn_list, max_iter=100, d_so_far=d_so_far, verbose=TRUE)
-
-res <- tibble_row(risk_sd=ce_res$u_approx, design=list(ce_res$d), num_loc=nrow(ce_res$d))
-saveRDS(res, "util-results/risk-sd/coord-ex-4.rds")
-
-res <- map_dfr(1:4, ~{
-    res_d <- readRDS(paste0("util-results/risk-sd/coord-ex-", .x, ".rds"))
-    res_d
-})
-
-saveRDS(res, "util-results/risk-sd/util-coord-ex.rds")
+res <- vector("list", 4)
+d_so_far <- tibble()
+for (i in 1:4) {
+    ex_res <- coordinate_exchange(util_fun, pred_mod, 5, nn_list, max_iter=150, d_so_far=d_so_far, verbose=TRUE)
+    d_so_far <- ex_res$d
+    u_res <- utility(ex_res$d, obs_mod, n=n, by=c("month", "site"), pred_df=pred_mod, util_fun=util_risk_sd, risk_df=risk_mod)
+    res[[i]] <- list(u_res=u_res, d=d_so_far)
+}

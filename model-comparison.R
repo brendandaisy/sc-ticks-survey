@@ -8,8 +8,6 @@ library(INLA)
 library(tidyverse)
 library(sf)
 library(cowplot)
-# library(ggridges)
-# library(gridExtra)
 
 source("other-helpers.R")
 

@@ -33,27 +33,6 @@ rescale_covars <- function(df) {
     mutate(df, across(tree_canopy:mean_rh, ~(.x - mean(.x)) / sd(.x)))
 }
 
-# prep_parks_model_data <- function(parks_sf, rescale=TRUE) {
-#     # rescale covariates and format a few things
-#     parks_rescale <- parks_sf |> 
-#         mutate(
-#             
-#             land_cover=land_cover_labels(land_cover),
-#             tick_class=ifelse(genus == "Ixodes", str_c(genus, " spp."), str_c(genus, " ", species))
-#         )
-#     
-#     ret <- parks_rescale |> 
-#         group_by(across(c(date, month, site, tick_class, land_cover:mean_rh))) |>
-#         summarize(pres=ifelse(sum(count) > 0, 1L, 0L), abun=sum(count), .groups="drop")
-#     
-#     mutate(ret, tcnum=case_when(
-#         tick_class == "Amblyomma americanum" ~ 1L, 
-#         tick_class == "Dermacentor variabilis" ~ 2L, 
-#         TRUE ~ 3L
-#     )) |> 
-#         arrange(tcnum)
-# }
-
 #' append_pred_data
 #' For the BED analysis, append the space of possible future park visits to initial
 #' collections data. These visits have pres=NA so if they are chosen by a design, their
