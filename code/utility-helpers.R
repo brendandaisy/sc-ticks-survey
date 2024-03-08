@@ -7,8 +7,8 @@ library(tidyverse)
 library(sf)
 library(furrr)
 
-#' @name utility
-#' @description Workhorse function to compute the utility of a proposed design `d`
+#' utility
+#' Workhorse function to compute the utility of a proposed design `d`
 #'
 #' @param d A df of visits, containing at least columns `date` and `site`
 #' @param known_df A df of any initial collections data
