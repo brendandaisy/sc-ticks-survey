@@ -5,6 +5,8 @@ an application to an ongoing tick monitoring program in the southeastern United 
 
 ## Repository structure
 
+The folders `data-proc` and `geo-files` contain shapefiles for the initial visitation data, environmental variables, and the grid of locations used to predict risk across the state. The `code` folder contains all the scripts necessary to reproduce the BED workflow and produce the figures from the text:
+
 - `bed-workflow-example.R` Illustration of the proposed BED workflow in a simple design space. A rough script that was used to produce the components for Figure 1
 - `other-helpers.R` Contains functions for reading in data for the initial collections and environmental variables, fitting the INLA models, and misc. cleaning tasks
 - `prep-bedopt-dfs.R` A convenience script to produce and save data that will be used during the BED
