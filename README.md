@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.10795595.svg)](https://doi.org/10.5281/zenodo.10795595)
+
 # sc-ticks-survey
 
 This repository contains code necessary for replicating the methods of Case et al., "Adapting vector surveillance using Bayesian Experimental Design: 
